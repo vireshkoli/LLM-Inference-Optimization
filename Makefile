@@ -43,13 +43,34 @@ check: lint types test  ## Everything CI runs
 # ---------------------------------------------------------------------------
 # Benchmarking
 # ---------------------------------------------------------------------------
+.PHONY: data
+data: data/sharegpt_v3.json  ## Fetch the ShareGPT corpus (~640 MB, gitignored)
+
+data/sharegpt_v3.json:
+	@mkdir -p data
+	curl -L --fail --progress-bar \
+	  "https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json" \
+	  -o $@
+
+.PHONY: validate
+validate:  ## Validate the sweep matrix without running anything
+	uv run llmbench validate --config configs/sweep.yaml
+
 .PHONY: bench-smoke
-bench-smoke:  ## ~15 min pipeline validation. The gate before the full sweep.
+bench-smoke: data  ## ~6 min pipeline validation. The gate before the full sweep.
 	uv run llmbench sweep --config configs/smoke.yaml --gpu $(BENCH_GPU)
 
 .PHONY: bench
-bench:  ## Full sweep matrix (~18 GPU-hours). Run bench-smoke first.
-	uv run llmbench sweep --config configs/sweep.yaml --gpu $(BENCH_GPU)
+bench: data  ## Full sweep matrix (~18 GPU-hours). Run bench-smoke first.
+	uv run llmbench sweep --config configs/sweep.yaml --gpu $(BENCH_GPU) --require-locked-clocks
+
+.PHONY: charts
+charts:  ## Regenerate every figure from committed results
+	uv run llmbench charts --results results/runs --out results/figures
+
+.PHONY: show
+show:  ## Summarise results already on disk
+	uv run llmbench show --results results/runs
 
 .PHONY: quality
 quality:  ## Perplexity + GSM8K + IFEval across quantization levels

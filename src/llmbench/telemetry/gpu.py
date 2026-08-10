@@ -39,6 +39,7 @@ __all__ = [
     "GpuSample",
     "GpuSampler",
     "decode_event_reasons",
+    "nvidia_smi_query",
     "parse_sample_line",
     "resolve_uuid",
     "summarize_samples",
@@ -135,7 +136,8 @@ def parse_sample_line(line: str) -> GpuSample:
     )
 
 
-def _nvidia_smi(args: Sequence[str]) -> str:
+def nvidia_smi_query(args: Sequence[str]) -> str:
+    """Run nvidia-smi with the given args and return stdout."""
     result = subprocess.run(
         ["nvidia-smi", *args],
         capture_output=True,
@@ -154,7 +156,7 @@ def resolve_uuid(gpu_index: int) -> str:
     card.
     """
     return (
-        _nvidia_smi(["--query-gpu=uuid", "--format=csv,noheader", "-i", str(gpu_index)])
+        nvidia_smi_query(["--query-gpu=uuid", "--format=csv,noheader", "-i", str(gpu_index)])
         .splitlines()[0]
         .strip()
     )
@@ -162,7 +164,7 @@ def resolve_uuid(gpu_index: int) -> str:
 
 def query_once(gpu_index: int) -> GpuSample:
     """Take a single reading from the given host GPU index."""
-    line = _nvidia_smi(
+    line = nvidia_smi_query(
         [
             f"--query-gpu={','.join(_QUERY_FIELDS)}",
             "--format=csv,noheader,nounits",
