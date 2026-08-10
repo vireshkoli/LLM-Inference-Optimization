@@ -4,9 +4,32 @@
 # result unreproducible; the digest is recorded into each RunResult.
 name: vllm
 image: vllm/vllm-openai
-tag: v0.11.0
-# Resolved by `make pin-images` and asserted at launch. Empty until Phase 3.
-image_digest: ""
+# Latest stable release. Never `nightly` or `latest`: those move underneath you
+# and make every previously-recorded result unreproducible.
+tag: v0.26.0
+# Resolved from the local image and recorded into every run.
+image_digest: "sha256:ffb2d59b1c059a5bd8d781320c9f5189de8293693b7d95da54befddaa54abf52"
+
+# Metric names VERIFIED against a live v0.26.0 /metrics endpoint on 2026-08-10,
+# not taken from documentation. The V1 engine renamed several: what older guides
+# call vllm:gpu_cache_usage_perc is now vllm:kv_cache_usage_perc, and
+# vllm:time_per_output_token_seconds is now prefixed with request_. Grafana
+# panels built on the old names render empty and look like an idle server.
+metrics:
+  ttft_histogram: vllm:time_to_first_token_seconds
+  tpot_histogram: vllm:request_time_per_output_token_seconds
+  itl_histogram: vllm:inter_token_latency_seconds
+  kv_cache_usage: vllm:kv_cache_usage_perc
+  requests_running: vllm:num_requests_running
+  requests_waiting: vllm:num_requests_waiting
+  generation_tokens: vllm:generation_tokens_total
+  prompt_tokens: vllm:prompt_tokens_total
+  queue_time: vllm:request_queue_time_seconds
+  prefill_time: vllm:request_prefill_time_seconds
+  decode_time: vllm:request_decode_time_seconds
+  # Preemption under KV pressure is a direct cause of tail latency; worth a
+  # panel of its own rather than being inferred from a latency spike.
+  preemptions: vllm:num_preemptions
 
 port: 8000
 health_path: /health
@@ -17,10 +40,12 @@ openai_base_path: /v1
 # quantization, gpu_memory_utilization, max_num_seqs, max_model_len) are
 # injected by the runner from sweep.yaml so parity across engines is enforced
 # in one place rather than duplicated per config.
+# NOTE: the model is a POSITIONAL argument as of v0.26 (`vllm serve <model_tag>`);
+# `--model` is deprecated. `--disable-log-requests` was REMOVED in v0.26 and
+# replaced by the inverted `--enable-log-requests` / `--no-enable-log-requests`.
 args:
-  --disable-log-requests: ""      # per-request logging perturbs the measurement
+  --no-enable-log-requests: ""    # per-request logging perturbs the measurement
   --seed: "0"
-  --enforce-eager: "false"        # CUDA graphs ON; capture happens before measurement
 
 # Regexes used to assert which kernel the engine actually selected, parsed from
 # startup logs. A checkpoint that silently falls off the fast path is the single

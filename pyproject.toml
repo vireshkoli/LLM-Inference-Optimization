@@ -81,6 +81,10 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Fixtures compose from other fixtures, so argument counts are inherently high.
 "tests/*" = ["PLR2004", "ARG001", "PLR0913", "PLR0917"]
+# Contains engine output captured verbatim from a real run. Reflowing the lines
+# would make the fixture stop matching what the engine actually prints, which is
+# the entire reason it is in the repository.
+"tests/test_engine_adapters.py" = ["E501", "PLR2004", "ARG001", "PLR0913", "PLR0917"]
 
 # ---------------------------------------------------------------------------
 # Types

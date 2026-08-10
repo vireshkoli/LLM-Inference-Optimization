@@ -1,0 +1,149 @@
+# Full measurement stack: engine + Prometheus + Grafana + DCGM exporter.
+#
+# This is the configuration the published results were actually produced with,
+# not a portable file written for appearances. Engines are declared behind
+# profiles so the observability stack can run continuously while engines are
+# started and torn down once per configuration by the sweep runner.
+#
+#   Observability only:  docker compose -f docker/compose.full.yml up -d
+#   With an engine:      docker compose -f docker/compose.full.yml --profile vllm up -d
+#
+# Host-specific values (HF cache path, GPU index) come from .env — see
+# compose.override.example.yml.
+
+x-gpu-device: &gpu-device
+  # Selects a specific *host* GPU. Note it is renumbered to index 0 inside the
+  # container, so never compare indices across the boundary — the engine adapter
+  # asserts identity by UUID instead.
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["${BENCH_GPU:-1}"]
+            capabilities: [gpu]
+
+services:
+  # ---------------------------------------------------------------------------
+  # Engines. Digest-pinned: a moving tag would make earlier results
+  # unreproducible, so `image` carries an explicit sha256.
+  # ---------------------------------------------------------------------------
+  vllm:
+    profiles: ["vllm"]
+    image: vllm/vllm-openai:${VLLM_TAG:-v0.26.0}
+    container_name: llmbench-vllm
+    <<: *gpu-device
+    ports:
+      - "${ENGINE_PORT:-8000}:8000"
+    volumes:
+      # Read-only: the benchmark must never mutate the weights it measures.
+      - ${HF_CACHE_DIR:-/home/ubuntu/.cache/huggingface}:/root/.cache/huggingface:ro
+    environment:
+      - HF_HOME=/root/.cache/huggingface
+      - VLLM_LOGGING_LEVEL=INFO
+    # vLLM's workers need far more than Docker's default 64 MB of /dev/shm.
+    shm_size: "16gb"
+    ipc: host
+    command:
+      - --model=${MODEL_ID:-meta-llama/Llama-3.1-8B-Instruct}
+      - --max-model-len=${MAX_MODEL_LEN:-4096}
+      - --gpu-memory-utilization=${GPU_MEM_UTIL:-0.90}
+      - --max-num-seqs=${MAX_NUM_SEQS:-256}
+      - --disable-log-requests
+      - --seed=0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      # Generous: cold weight load plus CUDA graph capture takes minutes.
+      retries: 90
+      start_period: 60s
+
+  sglang:
+    profiles: ["sglang"]
+    # cu129, NOT cu130 — CUDA 13 requires driver >= 580 and this host runs 570.
+    image: lmsysorg/sglang:${SGLANG_TAG:-v0.5.17-cu129}
+    container_name: llmbench-sglang
+    <<: *gpu-device
+    ports:
+      - "${ENGINE_PORT:-8000}:8000"
+    volumes:
+      - ${HF_CACHE_DIR:-/home/ubuntu/.cache/huggingface}:/root/.cache/huggingface:ro
+    environment:
+      - HF_HOME=/root/.cache/huggingface
+    shm_size: "16gb"
+    ipc: host
+    entrypoint: ["python3", "-m", "sglang.launch_server"]
+    command:
+      - --model-path=${MODEL_ID:-meta-llama/Llama-3.1-8B-Instruct}
+      - --host=0.0.0.0
+      - --port=8000
+      - --context-length=${MAX_MODEL_LEN:-4096}
+      - --mem-fraction-static=${GPU_MEM_UTIL:-0.90}
+      - --max-running-requests=${MAX_NUM_SEQS:-256}
+      # Metrics are opt-in on SGLang, unlike vLLM.
+      - --enable-metrics
+      - --random-seed=0
+
+  # ---------------------------------------------------------------------------
+  # Observability
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: llmbench-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # A 1s scrape would perturb the thing being measured; 5s resolves a
+      # multi-minute run's behaviour without meaningful overhead.
+      - --storage.tsdb.retention.time=30d
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    container_name: llmbench-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      # Local-only, read-only dashboards for screenshots. Not exposed publicly.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+      - GF_USERS_DEFAULT_THEME=light
+    depends_on:
+      - prometheus
+
+  dcgm-exporter:
+    # Supplies GPU utilisation, memory, temperature and clocks to Prometheus.
+    # The in-process nvidia-smi sampler remains the source of truth for values
+    # stored in results; this feeds the dashboards.
+    image: nvidia/dcgm-exporter:4.2.3-4.4.0-ubuntu22.04
+    container_name: llmbench-dcgm
+    ports:
+      - "9400:9400"
+    cap_add:
+      - SYS_ADMIN
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # All GPUs on purpose: the neighbouring card's thermal behaviour
+              # is a documented confound for this chassis, so it is worth
+              # seeing on the dashboard rather than hiding.
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  prometheus-data:
+  grafana-data:

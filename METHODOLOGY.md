@@ -90,8 +90,33 @@ does stop at EOS — and it is a deliberate trade of realism for control.
 - A settle/drain period separates consecutive rate points.
 - GPU clocks are pinned with `nvidia-smi -lgc`; the policy is recorded in every result record,
   including when locking was *not* applied.
-- Temperature, SM clock, power draw and `clocks_throttle_reasons.active` are sampled throughout
+- Temperature, SM clock, power draw and `clocks_event_reasons.active` are sampled throughout
   each run. `throttled_fraction` travels with the result.
+
+### Not every active event reason is a throttle
+
+Measured on this hardware: an A40 at 96 % utilisation reports `sw_power_cap` **continuously**.
+That is the card holding its 300 W budget — normal operation, not a fault. Treating any active
+event reason as throttling would mark every loaded run `THERMAL_THROTTLED` and leave the entire
+sweep unreportable.
+
+Only `hw_slowdown`, `sw_thermal_slowdown`, `hw_thermal_slowdown` and `hw_power_brake_slowdown`
+invalidate a measurement. Every other reason is still recorded and reported, so a reader can
+see that `sw_power_cap` was continuously active without it condemning the run. Hiding it would
+be as dishonest as counting it.
+
+### Verifying the clock lock
+
+`nvidia-smi -lgc` sets a locked clock range that this driver exposes **no query field for**.
+The obvious-looking `clocks.applications.graphics` reports the *default* applications clock,
+which on an A40 equals the max (1740 MHz) whether or not a lock is active — so reading it
+reports "locked" for an unlocked card.
+
+The lock is therefore recorded by the script that applies it and cross-checked behaviourally.
+That check is only meaningful under load: measured directly, an idle A40 with a 1740 MHz lock
+applied still drops to 210 MHz, and only holds 1740 MHz once a CUDA context exists. A preflight
+probe on an idle card therefore returns "unknown", never "failed"; the real verification runs
+against clocks sampled during the measurement window.
 
 ---
 
@@ -122,6 +147,47 @@ scheme.
 kernels varies with batch shape, so identical prompts can produce different tokens at different
 concurrency. Quality evaluations therefore run at a fixed low concurrency, recorded in each
 `QualityResult`.
+
+---
+
+## 5a. Measured environment facts
+
+Established by running the stack, not assumed at planning time. Several contradict what the
+documentation or prior experience would suggest.
+
+| Fact | Value | Why it matters |
+|---|---|---|
+| Container GPU renumbering | `--gpus '"device=1"'` → index **0** inside the container | Telemetry keyed on index would record the neighbouring GPU. Identity is asserted by **UUID**. |
+| KV cache, BF16, `max_model_len=4096` | **195,760 tokens / 23.9 GiB** | ~20 % below the 245k estimated from a naive 128 KiB/token calculation. KV is still not the bottleneck. |
+| Engine startup | ~220 s to healthy; 54.2 s engine init of which **29.6 s is compilation**, 6 s CUDA graph capture | All of it precedes the measurement window. Amortised by starting the engine once per configuration. |
+| vLLM image on disk | **18.9 GB** (10.3 GB compressed) | Roughly double the planning estimate; the disk budget was revised accordingly. |
+| Driver ceiling | 570.133.07 → CUDA 12.x only | SGLang **must** be a `-cu129` build. A `-cu130` image needs driver ≥ 580 and fails at container start with a CUDA init error that never mentions the driver. |
+
+### Prometheus metric names were verified, not assumed
+
+vLLM's V1 engine renamed several metrics. Panels built on the older names render empty, which
+looks indistinguishable from an idle server:
+
+| Commonly documented | Actual in v0.26.0 |
+|---|---|
+| `vllm:gpu_cache_usage_perc` | `vllm:kv_cache_usage_perc` |
+| `vllm:time_per_output_token_seconds` | `vllm:request_time_per_output_token_seconds` |
+
+The verified names are recorded in `configs/engines/vllm.yaml` and are what the committed
+Grafana dashboards query.
+
+### Harness cross-check against a live engine
+
+The measured metrics are internally consistent, which is the strongest available evidence that
+the timing code is correct. From a 4 rps run against vLLM serving Llama-3.1-8B BF16:
+
+```
+TPOT p50 × 63 tokens + TTFT p50  =  30.18 ms × 63 + 93.67 ms  =  1995 ms
+E2E p50 (independently measured) =                               1997 ms
+```
+
+Output token count was exactly 64.0 on every request with `finish_reason=length`, confirming
+`ignore_eos` makes every configuration perform identical work.
 
 ---
 

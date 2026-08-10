@@ -1,0 +1,8 @@
+{
+  "gpu_index": 1,
+  "gpu_uuid": "GPU-88098c5c-ddc0-9c3c-b403-ea19597482ba",
+  "locked": true,
+  "sm_clock_mhz": 1740,
+  "mem_clock_mhz": 7251,
+  "locked_at": "2026-08-10T06:09:46Z"
+}

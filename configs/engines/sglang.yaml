@@ -6,7 +6,11 @@
 # --gpu-memory-utilization, and pretending otherwise would be dishonest.
 name: sglang
 image: lmsysorg/sglang
-tag: v0.4.6-cu124
+# MUST be a -cu129 build, not -cu130. CUDA 13.0 requires driver >= 580; this
+# host runs 570.133.07. CUDA 12.x minor-version compatibility covers cu129 on a
+# 570 driver, so cu130 would fail at container start with a cryptic CUDA
+# initialisation error rather than anything naming the driver.
+tag: v0.5.17-cu129
 image_digest: ""
 
 port: 8000
