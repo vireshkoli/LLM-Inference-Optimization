@@ -1,0 +1,35 @@
+# SGLang engine launch profile.
+#
+# Held at parity with vLLM where the knobs correspond. Where they do not,
+# the asymmetry is documented in METHODOLOGY.md rather than hidden — SGLang's
+# --mem-fraction-static is not identical in meaning to vLLM's
+# --gpu-memory-utilization, and pretending otherwise would be dishonest.
+name: sglang
+image: lmsysorg/sglang
+tag: v0.4.6-cu124
+image_digest: ""
+
+port: 8000
+health_path: /health
+metrics_path: /metrics
+openai_base_path: /v1
+
+args:
+  --enable-metrics: ""            # Prometheus endpoint is opt-in on SGLang
+  --random-seed: "0"
+
+# RadixAttention prefix caching is SGLang's headline design difference. It is
+# left at its default for the primary sweep so the engine is measured as it
+# ships; ShareGPT prompts share little prefix, so its effect should be small —
+# which is itself worth reporting rather than assuming.
+parity_notes:
+  gpu_memory_utilization: "maps to --mem-fraction-static (not semantically identical)"
+  max_num_seqs: "maps to --max-running-requests"
+  max_model_len: "maps to --context-length"
+
+kernel_log_patterns:
+  gptq_marlin: "(?i)gptq_?marlin"
+  awq_marlin: "(?i)awq_?marlin"
+  marlin_generic: "(?i)\\bmarlin\\b"
+
+startup_timeout_s: 900

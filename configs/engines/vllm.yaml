@@ -1,0 +1,34 @@
+# vLLM engine launch profile.
+#
+# Image digest is pinned. `:latest` silently moves and would make every earlier
+# result unreproducible; the digest is recorded into each RunResult.
+name: vllm
+image: vllm/vllm-openai
+tag: v0.11.0
+# Resolved by `make pin-images` and asserted at launch. Empty until Phase 3.
+image_digest: ""
+
+port: 8000
+health_path: /health
+metrics_path: /metrics
+openai_base_path: /v1
+
+# Args applied to every vLLM configuration. Per-config values (model,
+# quantization, gpu_memory_utilization, max_num_seqs, max_model_len) are
+# injected by the runner from sweep.yaml so parity across engines is enforced
+# in one place rather than duplicated per config.
+args:
+  --disable-log-requests: ""      # per-request logging perturbs the measurement
+  --seed: "0"
+  --enforce-eager: "false"        # CUDA graphs ON; capture happens before measurement
+
+# Regexes used to assert which kernel the engine actually selected, parsed from
+# startup logs. A checkpoint that silently falls off the fast path is the single
+# most expensive failure mode in this project, so it is detected at launch.
+kernel_log_patterns:
+  gptq_marlin: "(?i)using\\s+gptq_?marlin|gptq_marlin"
+  awq_marlin: "(?i)using\\s+awq_?marlin|awq_marlin"
+  compressed-tensors-w8a8-int8: "(?i)compressed[- ]tensors|cutlass.*int8|w8a8"
+  marlin_generic: "(?i)\\bmarlin\\b"
+
+startup_timeout_s: 600

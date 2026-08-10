@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Fail fast rather than silently proceeding on a partial environment.
+  UV_FROZEN: "1"
+
+jobs:
+  check:
+    name: lint · types · tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Sync dependencies
+        run: uv sync --dev
+
+      - name: Lint (ruff)
+        run: |
+          uv run ruff check --output-format=github .
+          uv run ruff format --check .
+
+      - name: Types (mypy --strict)
+        run: uv run mypy
+
+      # There is no GPU in CI, so this covers what does not need one: the
+      # arrival-process maths, percentile computation, dispatch-lag validity
+      # guard, cost model, results schema, and plot generation against
+      # synthetic fixtures. Statistical code with no tests is a liability in a
+      # benchmark repo specifically.
+      - name: Tests
+        run: uv run pytest -m "not gpu" --durations=10
+
+  config-validation:
+    name: sweep configs parse and validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv python install 3.12
+      - run: uv sync --dev
+      # A config that only fails at GPU-launch time costs a lab session.
+      # Catch it here instead.
+      - name: Validate every sweep config
+        run: |
+          uv run python - <<'PY'
+          import sys, yaml, pathlib
+          ok = True
+          for p in sorted(pathlib.Path("configs").rglob("*.yaml")):
+              try:
+                  yaml.safe_load(p.read_text())
+                  print(f"ok   {p}")
+              except Exception as exc:  # noqa: BLE001
+                  ok = False
+                  print(f"FAIL {p}: {exc}")
+          sys.exit(0 if ok else 1)
+          PY

@@ -1,0 +1,121 @@
+# =============================================================================
+# THE sweep matrix. Adding or removing a configuration must never require
+# editing benchmark code — if it does, that is a bug in the harness.
+#
+# Hardware target: NVIDIA A40 (GA102, compute capability 8.6, 46 GB, 696 GB/s).
+#
+# Checkpoint revisions are pinned to resolved commit SHAs, not branch names.
+# "main" is not reproducible.
+# =============================================================================
+schema_version: "1.0.0"
+
+model:
+  hf_id: meta-llama/Llama-3.1-8B-Instruct
+  revision: 0e9e39f249a16976918f6564b8830bc894c89659
+  # Pinned identically across every engine and quantization level. Llama-3.1
+  # advertises 131072, but holding a common, modest context is what makes the
+  # cross-engine comparison fair and keeps KV allocation comparable.
+  max_model_len: 4096
+
+defaults:
+  gpu_memory_utilization: 0.90
+  max_num_seqs: 256
+  repeats: 3
+  warmup_requests: 50
+  measurement_duration_s: 180
+  settle_s: 20            # drain between rate points; excluded from measurement
+  ignore_eos: true
+
+workload:
+  arrival_process: poisson
+  length_source: sharegpt
+  seed: 20260810
+  # Swept until saturation. The knee is identified from the resulting curve,
+  # not assumed. The runner stops early once a rate point saturates.
+  request_rates_rps: [1, 2, 4, 8, 12, 16, 24]
+
+# -----------------------------------------------------------------------------
+# Quantization levels.
+#
+# FP8 is deliberately ABSENT. The A40 is sm_86 and has no FP8 tensor cores
+# (native FP8 requires sm_89 Ada / sm_90 Hopper). vLLM will still *load* an FP8
+# checkpoint on Ampere by dequantizing to FP16 — it appears to work and yields
+# weight-only compression with no compute speedup. Reporting that as "FP8 on
+# A40" is exactly the error class this repo exists to avoid.
+#
+# Both INT4 GPTQ checkpoints available for this model carry desc_act=true.
+# vLLM's gptq_marlin supports act-order via a load-time permutation, at some
+# runtime cost. AWQ-GEMM has no act-order concept, so GPTQ vs AWQ at identical
+# bit width isolates that overhead rather than duplicating a data point.
+# Kernel selection is asserted from engine startup logs, never assumed.
+# -----------------------------------------------------------------------------
+quantizations:
+  bf16:
+    hf_id: meta-llama/Llama-3.1-8B-Instruct
+    revision: 0e9e39f249a16976918f6564b8830bc894c89659
+    dtype: bfloat16
+    expected_weights_gib: 15.0
+    expected_kernel: null
+
+  int8-w8a8:
+    hf_id: RedHatAI/Meta-Llama-3.1-8B-Instruct-quantized.w8a8
+    revision: 0b61d8e14c48b90ae6c33118a9034616623e2530
+    dtype: auto
+    expected_weights_gib: 8.5
+    # W8 channel-wise symmetric + A8 per-token dynamic -> CUTLASS INT8 path.
+    expected_kernel: compressed-tensors-w8a8-int8
+
+  gptq-int4:
+    hf_id: RedHatAI/Meta-Llama-3.1-8B-Instruct-quantized.w4a16
+    revision: 6a426ef8adc0b4b96408001a9628d71f01c9ceca
+    dtype: auto
+    expected_weights_gib: 5.7
+    expected_kernel: gptq_marlin
+    notes: "desc_act=true, group_size=128, sym=true"
+
+  awq-int4:
+    hf_id: hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4
+    revision: db1f81ad4b8c7e39777509fac66c652eb0a52f91
+    dtype: auto
+    expected_weights_gib: 5.7
+    expected_kernel: awq_marlin
+    notes: "GEMM version, group_size=128, zero_point=true, no act-order"
+
+# -----------------------------------------------------------------------------
+# Configurations under test.
+#
+# vLLM carries the full quantization axis; SGLang runs a reduced confirmation
+# sweep at the two endpoints. Quantization is the primary axis and gets the
+# GPU-hours; the engine axis exists to show the finding is not vLLM-specific.
+# -----------------------------------------------------------------------------
+configurations:
+  - { id: vllm-bf16,       engine: vllm,   quantization: bf16 }
+  - { id: vllm-int8-w8a8,  engine: vllm,   quantization: int8-w8a8 }
+  - { id: vllm-gptq-int4,  engine: vllm,   quantization: gptq-int4 }
+  - { id: vllm-awq-int4,   engine: vllm,   quantization: awq-int4 }
+  - { id: sglang-bf16,     engine: sglang, quantization: bf16 }
+  - { id: sglang-awq-int4, engine: sglang, quantization: awq-int4 }
+
+# -----------------------------------------------------------------------------
+# Runs that exist to test the methodology itself rather than to rank configs.
+# -----------------------------------------------------------------------------
+methodology_runs:
+  # Real production inter-arrival times. Poisson is itself an assumption; this
+  # quantifies what that assumption costs at the tail.
+  - id: vllm-bf16-azure-trace
+    config: vllm-bf16
+    arrival_process: trace-replay
+    length_source: azure-trace
+
+  # Demonstrates coordinated omission: same offered load, closed-loop client.
+  # Reported only as a methodology exhibit, never as a headline number.
+  - id: vllm-bf16-closed-loop
+    config: vllm-bf16
+    arrival_process: closed-loop
+    concurrency: 64
+
+  # Re-run of the first configuration at the end of the sweep. If the two agree
+  # within noise, environmental drift over the sweep is bounded.
+  - id: drift-canary
+    config: vllm-bf16
+    repeat_of: vllm-bf16

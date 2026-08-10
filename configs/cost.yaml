@@ -1,0 +1,54 @@
+# =============================================================================
+# Cost model assumptions.
+#
+# The benchmark GPU is a lab machine with no invoice, so cost is computed
+# against a public cloud reference price for equivalent hardware. This file is
+# the single place that price is stated, and REPORT.md surfaces it prominently
+# rather than burying it.
+#
+#   cost_per_1M_tokens = (gpu_hourly_usd * wall_clock_hours) / tokens_generated * 1e6
+#
+# ---------------------------------------------------------------------------
+# IMPORTANT — on price sensitivity
+#
+# Every configuration in this sweep runs on the SAME GPU, so the hourly rate
+# enters as a linear scalar:
+#
+#   cost_per_1M = gpu_hourly_usd / tokens_per_hour
+#
+# The RANKING of configurations is therefore invariant to the GPU price. There
+# is no crossover rate at which a different configuration wins, and publishing
+# a price-sensitivity table would imply a result that does not exist.
+#
+# What *does* reorder the frontier is the latency SLA: a p95 TTFT budget
+# determines which configurations are admissible and at what request rate,
+# which changes sustainable throughput and therefore cost per token. REPORT.md
+# presents cost-optimal configuration as a function of the p95 TTFT budget.
+# ---------------------------------------------------------------------------
+#
+# GPU spot/on-demand pricing moves. Re-verify and update accessed_date before
+# publishing results; `make report` stamps this block into REPORT.md verbatim.
+# =============================================================================
+schema_version: "1.0.0"
+
+reference:
+  gpu_hourly_usd: 0.40
+  source_vendor: RunPod
+  source_url: https://www.runpod.io/pricing
+  accessed_date: "2026-08-10"
+  notes: >-
+    RunPod A40 (48 GB) on-demand community-cloud rate. Chosen because A40 is
+    offered as a first-class public SKU there, so the reference is a real
+    purchasable price for the exact hardware measured rather than an
+    extrapolation from a different GPU. VERIFY BEFORE PUBLISHING.
+
+# Alternates carried for context in REPORT.md. They scale the absolute numbers
+# and, per the note above, leave the ranking untouched.
+alternates:
+  - { label: "RunPod A40 (secure cloud)", gpu_hourly_usd: 0.79, source_url: https://www.runpod.io/pricing }
+  - { label: "Hyperscaler-class markup",  gpu_hourly_usd: 1.28, source_url: https://www.runpod.io/pricing }
+
+# SLA thresholds the decision framework in REPORT.md is evaluated against.
+sla_targets:
+  p95_ttft_ms: [200, 500, 1000, 2000]
+  p95_tpot_ms: [25, 50, 100]

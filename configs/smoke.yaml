@@ -1,0 +1,44 @@
+# =============================================================================
+# Pipeline validation subset — the Phase 4 gate.
+#
+# Target: ~15 minutes end-to-end, one engine, one quantization, no repeats.
+# Its job is to prove the harness works end to end (launch -> load -> measure ->
+# validate -> chart) BEFORE ~18 GPU-hours are committed to the full matrix.
+#
+# It is not a measurement. Durations here are far too short for steady state
+# and the results must never be reported.
+# =============================================================================
+schema_version: "1.0.0"
+
+model:
+  hf_id: meta-llama/Llama-3.1-8B-Instruct
+  revision: 0e9e39f249a16976918f6564b8830bc894c89659
+  max_model_len: 4096
+
+defaults:
+  gpu_memory_utilization: 0.90
+  max_num_seqs: 256
+  repeats: 1
+  warmup_requests: 10
+  measurement_duration_s: 30
+  settle_s: 5
+  ignore_eos: true
+
+workload:
+  arrival_process: poisson
+  length_source: sharegpt
+  seed: 20260810
+  request_rates_rps: [1, 4]
+
+quantizations:
+  bf16:
+    hf_id: meta-llama/Llama-3.1-8B-Instruct
+    revision: 0e9e39f249a16976918f6564b8830bc894c89659
+    dtype: bfloat16
+    expected_weights_gib: 15.0
+    expected_kernel: null
+
+configurations:
+  - { id: vllm-bf16, engine: vllm, quantization: bf16 }
+
+methodology_runs: []
