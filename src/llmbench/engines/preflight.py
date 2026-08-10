@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-__all__ = ["PreflightError", "PreflightReport", "run_preflight"]
+__all__ = ["PreflightError", "PreflightReport", "check_free_vram", "run_preflight"]
 
 
 class PreflightError(RuntimeError):
@@ -38,6 +38,7 @@ class PreflightReport:
     neighbor_gpu_busy: bool
     neighbor_details: tuple[str, ...]
     free_disk_gib: float
+    free_vram_gib: float
     clocks_locked: bool
     sm_clock_mhz: int | None
     warnings: tuple[str, ...] = field(default_factory=tuple)
@@ -148,24 +149,84 @@ def verify_clock_lock(
     return abs(current - claimed_sm_mhz) <= tolerance_mhz
 
 
+def clock_lock_held_fraction(
+    sm_clock_samples: Sequence[float], claimed_sm_mhz: int, *, tolerance_mhz: int = 30
+) -> float:
+    """Share of sampled clocks sitting at the locked value."""
+    if not sm_clock_samples:
+        return 0.0
+    at_lock = sum(1 for c in sm_clock_samples if abs(c - claimed_sm_mhz) <= tolerance_mhz)
+    return at_lock / len(sm_clock_samples)
+
+
 def verify_clock_lock_from_telemetry(
     sm_clock_samples: Sequence[float],
     claimed_sm_mhz: int,
     *,
     tolerance_mhz: int = 30,
-    min_fraction_at_lock: float = 0.9,
+    min_fraction_at_lock: float = 0.70,
 ) -> bool:
-    """Confirm a lock held across a completed measurement window.
+    """Confirm a lock broadly held across a completed measurement window.
 
-    This is the check that actually matters: it uses clocks sampled while the
-    benchmark was running, so unlike the preflight probe it is never confounded
-    by an idle card. A lock that silently lapsed mid-sweep — the case that would
-    quietly skew late runs — shows up here.
+    Uses clocks sampled while the benchmark was running, so unlike the preflight
+    probe it is never confounded by an idle card.
+
+    **A clock lock is not absolute on a power-capped card, and the threshold
+    reflects measurement rather than optimism.** On this A40, with a 1740 MHz
+    lock applied, a saturating run produced:
+
+    * median SM clock 1740 MHz, minimum 1515 MHz
+    * 21 % of samples more than 30 MHz below the lock
+    * exactly those samples coincided with power at or above 290 W of the 300 W cap
+
+    The lock removes *boost* variability but cannot defeat the power budget: at
+    peak load the card trades clock for watts. Demanding ~100 % adherence would
+    therefore fail every heavily-loaded run for a reason that is physics rather
+    than a fault, so the default admits the power-capped dips while still
+    catching a lock that genuinely lapsed.
+
+    The full clock distribution is recorded in every result regardless, so a
+    reader can judge this rather than take the boolean on trust.
     """
-    if not sm_clock_samples:
-        return False
-    at_lock = sum(1 for c in sm_clock_samples if abs(c - claimed_sm_mhz) <= tolerance_mhz)
-    return at_lock / len(sm_clock_samples) >= min_fraction_at_lock
+    return (
+        clock_lock_held_fraction(sm_clock_samples, claimed_sm_mhz, tolerance_mhz=tolerance_mhz)
+        >= min_fraction_at_lock
+    )
+
+
+def check_free_vram(gpu_index: int, gpu_memory_utilization: float) -> tuple[float, float]:
+    """Verify the target GPU has enough free memory for the requested budget.
+
+    vLLM reserves ``gpu_memory_utilization x total`` at startup and refuses to
+    launch if that much is not free. It does detect this — but only after
+    ~90 seconds of image start, weight load and device init. Checking here turns
+    a 90-second failure into an instant one.
+
+    The usual cause is a previous engine container that has not fully released
+    the device yet, which is easy to hit when iterating.
+
+    Returns:
+        ``(free_gib, required_gib)``.
+
+    Raises:
+        PreflightError: If free memory is below the requested budget.
+    """
+    row = _smi("memory.total,memory.used", ["-i", str(gpu_index)])[0]
+    total_mib, used_mib = (float(p.strip()) for p in row.split(","))
+    free_gib = (total_mib - used_mib) / 1024
+    required_gib = (total_mib / 1024) * gpu_memory_utilization
+
+    if free_gib < required_gib:
+        msg = (
+            f"GPU {gpu_index} has {free_gib:.2f} GiB free but the configuration requests "
+            f"{gpu_memory_utilization:.0%} of {total_mib / 1024:.2f} GiB "
+            f"({required_gib:.2f} GiB). Something else is holding memory on this device — "
+            f"most often a previous engine container that has not exited. "
+            f"Check `nvidia-smi` and `docker ps`."
+        )
+        raise PreflightError(msg)
+
+    return free_gib, required_gib
 
 
 def check_disk(path: str, *, min_free_gib: float) -> float:
@@ -191,6 +252,7 @@ def run_preflight(
     *,
     results_path: str = ".",
     min_free_gib: float = 20.0,
+    gpu_memory_utilization: float | None = None,
     require_locked_clocks: bool = False,
 ) -> PreflightReport:
     """Run all checks and produce the record stamped onto every result.
@@ -214,6 +276,9 @@ def run_preflight(
         raise PreflightError(msg) from exc
 
     free_gib = check_disk(results_path, min_free_gib=min_free_gib)
+    free_vram_gib = 0.0
+    if gpu_memory_utilization is not None:
+        free_vram_gib, _ = check_free_vram(gpu_index, gpu_memory_utilization)
     neighbor_busy, neighbor_details = check_neighbor_gpus(gpu_index)
     locked, sm_clock = check_clocks(gpu_index)
 
@@ -262,6 +327,7 @@ def run_preflight(
         neighbor_gpu_busy=neighbor_busy,
         neighbor_details=neighbor_details,
         free_disk_gib=free_gib,
+        free_vram_gib=free_vram_gib,
         clocks_locked=locked,
         sm_clock_mhz=sm_clock,
         warnings=tuple(warnings),

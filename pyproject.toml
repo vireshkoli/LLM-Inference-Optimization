@@ -28,7 +28,7 @@ fast = ["uvloop>=0.20"]
 llmbench = "llmbench.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/vireshkoli/llm-inference-optimization"
+Homepage = "https://github.com/vireshkoli/LLM-Inference-Optimization"
 
 [dependency-groups]
 dev = [

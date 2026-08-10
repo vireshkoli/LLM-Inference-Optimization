@@ -105,6 +105,26 @@ invalidate a measurement. Every other reason is still recorded and reported, so 
 see that `sw_power_cap` was continuously active without it condemning the run. Hiding it would
 be as dishonest as counting it.
 
+### A clock lock is not absolute on a power-capped card
+
+Measured during a saturating run with a 1740 MHz lock applied:
+
+| | |
+|---|---|
+| SM clock | median **1740 MHz**, minimum **1515 MHz** |
+| Samples >30 MHz below the lock | **21 %** (18 of 85) |
+| Power draw | median 115 W, max **302 W** against a 300 W cap |
+| Samples at/above 290 W | **18 of 85** |
+
+The correspondence is exact: every clock dip coincides with the power cap
+binding. `nvidia-smi -lgc` removes *boost* variability but cannot defeat the
+power budget — at peak load the card trades clock for watts.
+
+This is reported rather than hidden, and it sets the verification threshold
+honestly: demanding ~100 % clock adherence would fail every heavily-loaded run
+for a reason that is physics, not a fault. The full clock distribution is stored
+in each result so a reader can judge it directly instead of trusting a boolean.
+
 ### Verifying the clock lock
 
 `nvidia-smi -lgc` sets a locked clock range that this driver exposes **no query field for**.
@@ -175,6 +195,28 @@ looks indistinguishable from an idle server:
 
 The verified names are recorded in `configs/engines/vllm.yaml` and are what the committed
 Grafana dashboards query.
+
+### The bandwidth-bound premise, measured rather than inferred
+
+This benchmark's central claim is that the A40 is memory-bandwidth-bound during
+decode (~696 GB/s against ~150 TFLOPS BF16), and that weight-only quantization
+should therefore pay off more here than on the higher-bandwidth GPUs most public
+benchmarks use. That is a spec-sheet inference until something measures it.
+
+DCGM profiling counters, sampled during a live run at moderate load:
+
+| Counter | Value |
+|---|---|
+| `DCGM_FI_PROF_DRAM_ACTIVE` | **0.89** — memory bandwidth 89 % saturated |
+| `DCGM_FI_PROF_PIPE_TENSOR_ACTIVE` | **0.21** — tensor cores 21 % busy |
+
+Decode on this card is unambiguously bandwidth-bound, not compute-bound. As
+offered load rises and batches grow, the ratio shifts as theory predicts —
+at saturation DRAM activity fell to 0.69 while tensor activity rose to 0.58,
+because a larger batch amortises each weight read across more tokens.
+
+The premise behind the whole quantization axis is therefore established by
+measurement before any quantized configuration is benchmarked.
 
 ### Harness cross-check against a live engine
 

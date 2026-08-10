@@ -1,0 +1,430 @@
+{
+  "uid": "llmbench-serving",
+  "title": "LLM Serving — vLLM on NVIDIA A40",
+  "tags": ["llmbench", "vllm", "gpu"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "gpu_uuid",
+        "label": "Measurement GPU",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "llmbench-prom" },
+        "query": "label_values(DCGM_FI_DEV_GPU_UTIL, UUID)",
+        "refresh": 1,
+        "includeAll": false,
+        "description": "Pinned by UUID, not index: container GPU indices are renumbered, so an index filter can silently select the wrong card."
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Serving throughput and latency (vLLM)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Token throughput",
+      "description": "Generation vs prompt tokens per second. Prompt throughput is prefill work; generation throughput is the decode rate that quantization is expected to improve on a bandwidth-bound GPU.",
+      "datasource": { "type": "prometheus", "uid": "llmbench-prom" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": { "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "generation tokens/s" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#2a78d6" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "prompt tokens/s" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#eb6834" } }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(vllm:generation_tokens_total[1m]))",
+          "legendFormat": "generation tokens/s",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(vllm:prompt_tokens_total[1m]))",
+          "legendFormat": "prompt tokens/s",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Time to first token (percentiles)",
+      "description": "From the engine's own histogram. NOTE the series name: vLLM's V1 engine metric is vllm:time_to_first_token_seconds. Published numbers come from the client-side load generator, not from here — a server cannot observe its own queueing delay from the client's point of view.",
+      "datasource": { "type": "prometheus", "uid": "llmbench-prom" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "p50" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#2a78d6" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "p95" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#eb6834" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "p99" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#e34948" } }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket[1m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket[1m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket[1m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Queue depth",
+      "description": "Requests waiting is the scheduler's backlog. It rising while running stays flat is the signature of saturation — the knee in the latency-vs-throughput curve.",
+      "datasource": { "type": "prometheus", "uid": "llmbench-prom" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 9 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "showPoints": "never", "stacking": { "mode": "none" } }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "running" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#1baf7a" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "waiting" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#e34948" } }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        { "expr": "sum(vllm:num_requests_running)", "legendFormat": "running", "refId": "A" },
+        { "expr": "sum(vllm:num_requests_waiting)", "legendFormat": "waiting", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "KV cache utilisation",
+      "description": "vllm:kv_cache_usage_perc — renamed from gpu_cache_usage_perc in the V1 engine. A dashboard using the old name renders empty and looks exactly like an idle server.",
+      "datasource": { "type": "prometheus", "uid": "llmbench-prom" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 9 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "showPoints": "never" },
+          "color": { "mode": "fixed", "fixedColor": "#4a3aa7" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "expr": "sum(vllm:kv_cache_usage_perc)", "legendFormat": "KV cache used", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Preemptions",
+      "description": "Requests evicted under KV pressure and re-run. A direct, named cause of tail latency — worth its own panel rather than being inferred from an unexplained latency spike.",
+      "datasource": { "type": "prometheus", "uid": "llmbench-prom" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 9 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "showPoints": "never" },
+          "color": { "mode": "fixed", "fixedColor": "#e34948" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(vllm:num_preemptions_total[1m]))",
+          "legendFormat": "preemptions/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Time per output token (percentiles)",
+      "description": "Decode-phase latency, excluding prefill. Kept separate from TTFT rather than sharing an axis — separating prefill from decode is the whole point of reporting them apart.",
+      "datasource": { "type": "prometheus", "uid": "llmbench-prom" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "p50" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#2a78d6" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "p95" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#eb6834" } }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(vllm:request_time_per_output_token_seconds_bucket[1m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_time_per_output_token_seconds_bucket[1m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Request phase breakdown (p95)",
+      "description": "Queue, prefill and decode time separately. Where a request's latency actually goes — and which phase a configuration change moved.",
+      "datasource": { "type": "prometheus", "uid": "llmbench-prom" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "queue" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#eda100" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "prefill" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#eb6834" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "decode" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#1baf7a" } }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_queue_time_seconds_bucket[1m])))",
+          "legendFormat": "queue",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_prefill_time_seconds_bucket[1m])))",
+          "legendFormat": "prefill",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_decode_time_seconds_bucket[1m])))",
+          "legendFormat": "decode",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "GPU (DCGM) — measurement device and chassis neighbour",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "GPU utilisation — all cards in chassis",
+      "description": "Both A40s are shown deliberately. They are passively cooled and share chassis airflow, so a busy neighbour raises inlet temperature on the card under test. Hiding it would hide a documented confound.",
+      "datasource": { "type": "prometheus", "uid": "llmbench-prom" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": { "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "DCGM_FI_DEV_GPU_UTIL",
+          "legendFormat": "GPU {{gpu}} ({{UUID}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory-bandwidth activity (DRAM active)",
+      "description": "The mechanism behind this benchmark's core claim. The A40 has ~696 GB/s against ~150 TFLOPS BF16, so decode is memory-bandwidth-bound: every token reads all weights. Weight-only quantization shrinks bytes-read-per-token, and its effect should be visible here as reduced DRAM activity at equal throughput.",
+      "datasource": { "type": "prometheus", "uid": "llmbench-prom" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": { "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "DRAM active" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#4a3aa7" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "tensor pipe active" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#1baf7a" } }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "DCGM_FI_PROF_DRAM_ACTIVE{UUID=\"$gpu_uuid\"}",
+          "legendFormat": "DRAM active",
+          "refId": "A"
+        },
+        {
+          "expr": "DCGM_FI_PROF_PIPE_TENSOR_ACTIVE{UUID=\"$gpu_uuid\"}",
+          "legendFormat": "tensor pipe active",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "GPU memory used",
+      "datasource": { "type": "prometheus", "uid": "llmbench-prom" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 34 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decmbytes",
+          "custom": { "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" },
+          "color": { "mode": "fixed", "fixedColor": "#2a78d6" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "DCGM_FI_DEV_FB_USED{UUID=\"$gpu_uuid\"}",
+          "legendFormat": "framebuffer used",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Temperature",
+      "description": "Both cards. A rising neighbour temperature with a flat measurement temperature is the evidence that thermal coupling stayed bounded across a sweep.",
+      "datasource": { "type": "prometheus", "uid": "llmbench-prom" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 34 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "expr": "DCGM_FI_DEV_GPU_TEMP", "legendFormat": "GPU {{gpu}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "SM clock and power",
+      "description": "With clocks pinned via nvidia-smi -lgc, SM clock should sit flat at 1740 MHz under load. A dip is the lock lapsing, which invalidates steady-state assumptions.",
+      "datasource": { "type": "prometheus", "uid": "llmbench-prom" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 34 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": { "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "SM clock (MHz)" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#2a78d6" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "power (W)" },
+            "properties": [
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#eb6834" } }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "DCGM_FI_DEV_SM_CLOCK{UUID=\"$gpu_uuid\"}",
+          "legendFormat": "SM clock (MHz)",
+          "refId": "A"
+        },
+        {
+          "expr": "DCGM_FI_DEV_POWER_USAGE{UUID=\"$gpu_uuid\"}",
+          "legendFormat": "power (W)",
+          "refId": "B"
+        }
+      ]
+    }
+  ]
+}

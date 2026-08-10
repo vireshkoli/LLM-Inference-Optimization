@@ -1,0 +1,43 @@
+# Prometheus scrape configuration for the measurement stack.
+#
+# Scrape interval is 5s, not 1s: a 1s interval on a 349-series endpoint adds
+# measurable load to the machine whose latency is being measured, and 5s still
+# resolves a multi-minute run's behaviour comfortably.
+#
+# Prometheus is for *observability* — dashboards, screenshots, live inspection.
+# It is deliberately NOT the source of truth for published numbers: those come
+# from the in-process load generator and nvidia-smi sampler, which measure at
+# the client and the device rather than asking the server to describe itself.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+  external_labels:
+    stack: llmbench
+
+scrape_configs:
+  # The engine under test. Runs as a sibling container publishing to the host,
+  # so it is reached via the host gateway rather than by container name — the
+  # sweep runner starts and stops engines outside compose's lifecycle.
+  - job_name: engine
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8000"]
+        labels:
+          component: engine
+    # Engines are torn down between configurations; a scrape failure is the
+    # normal state between runs, not an alert condition.
+    honor_labels: true
+
+  # GPU utilisation, memory, temperature, clocks and throttle reasons.
+  - job_name: dcgm
+    static_configs:
+      - targets: ["dcgm-exporter:9400"]
+        labels:
+          component: gpu
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          component: prometheus

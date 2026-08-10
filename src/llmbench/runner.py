@@ -386,6 +386,7 @@ class SweepRunner:
         preflight = run_preflight(
             self.gpu_index,
             results_path=str(self.results_dir),
+            gpu_memory_utilization=self.config.defaults.gpu_memory_utilization,
             require_locked_clocks=self.require_locked_clocks,
         )
         for warning in preflight.warnings:

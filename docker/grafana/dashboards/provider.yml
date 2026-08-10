@@ -1,0 +1,15 @@
+apiVersion: 1
+
+providers:
+  - name: llmbench
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    # Dashboards are committed to the repo and provisioned from disk, so the
+    # dashboard shown in screenshots is the one under version control rather
+    # than something hand-edited in the UI and lost.
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

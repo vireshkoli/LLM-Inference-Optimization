@@ -84,10 +84,37 @@ make report            # regenerate every chart and table from results JSON
 
 ---
 
+## Why the A40 makes quantization interesting — measured, not assumed
+
+The premise behind the whole quantization axis is that this GPU is
+memory-bandwidth-bound during decode. DCGM profiling counters, sampled live under load:
+
+![Memory bandwidth vs tensor activity](docs/images/grafana-dram-active.png)
+
+**DRAM active 89 %, tensor cores 21 %.** Decode is bandwidth-bound, not compute-bound — so
+weight-only quantization, which shrinks bytes read per token, has room to pay off here that it
+would not have on a higher-bandwidth part. As batches grow toward saturation the ratio shifts
+as theory predicts (DRAM 0.69, tensor 0.58): a bigger batch amortises each weight read across
+more tokens.
+
+## Observability
+
+Prometheus + Grafana + DCGM, brought up with `make stack-up`. Dashboards are provisioned from
+committed JSON, so the panels below are the ones under version control.
+
+![Grafana dashboard](docs/images/grafana-dashboard.png)
+
+The saturation knee is visible directly: throughput peaks and rolls off, queue depth spikes,
+p95/p99 TTFT hockey-sticks, and the request-phase breakdown shows queueing — not prefill or
+decode — is what actually degrades.
+
+> Metric names were verified against a live endpoint rather than taken from documentation.
+> vLLM's V1 engine renamed several: `gpu_cache_usage_perc` → `kv_cache_usage_perc`. A dashboard
+> built on the old name renders empty and looks exactly like an idle server.
+
 ## Results
 
-_Generated in Phase 7–8. The Pareto frontier chart, results table, and Grafana screenshot land
-here._
+_Generated in Phase 7–8. The Pareto frontier chart and results table land here._
 
 ---
 
