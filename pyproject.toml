@@ -18,6 +18,7 @@ dependencies = [
     "matplotlib>=3.9",
     "tokenizers>=0.20",
     "huggingface-hub>=0.25",
+    "pyarrow>=25.0.1",
 ]
 
 [project.optional-dependencies]
@@ -97,7 +98,9 @@ warn_unreachable = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["scipy.*", "matplotlib.*"]
+# pyarrow ships no py.typed marker; it is used only for offline dataset prep,
+# never on the measurement hot path.
+module = ["scipy.*", "matplotlib.*", "pyarrow.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------

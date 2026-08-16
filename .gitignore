@@ -25,6 +25,7 @@ docker/compose.override.yml
 __pycache__/
 *.py[cod]
 .venv/
+.venv-lmeval/
 venv/
 *.egg-info/
 build/

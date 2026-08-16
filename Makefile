@@ -52,6 +52,24 @@ data/sharegpt_v3.json:
 	  "https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json" \
 	  -o $@
 
+.PHONY: data-quality
+data-quality: data/wikitext2_test.parquet  ## Fetch WikiText-2 for perplexity
+
+data/wikitext2_test.parquet:
+	@mkdir -p data
+	curl -L --fail --progress-bar \
+	  "https://huggingface.co/datasets/Salesforce/wikitext/resolve/main/wikitext-2-raw-v1/test-00000-of-00001.parquet" \
+	  -o $@
+
+.PHONY: lmeval-env
+lmeval-env: .venv-lmeval/bin/python  ## Build the isolated lm-eval environment
+
+.venv-lmeval/bin/python:
+	# Separate venv on purpose: lm-eval depends on torch, and the load generator
+	# must stay light — a heavy client is what this project measures, not ships.
+	uv venv --python 3.12 .venv-lmeval
+	uv pip install --python .venv-lmeval/bin/python "lm-eval[ifeval]==0.4.12"
+
 .PHONY: validate
 validate:  ## Validate the sweep matrix without running anything
 	uv run llmbench validate --config configs/sweep.yaml
@@ -73,7 +91,7 @@ show:  ## Summarise results already on disk
 	uv run llmbench show --results results/runs
 
 .PHONY: quality
-quality:  ## Perplexity + GSM8K + IFEval across quantization levels
+quality: data-quality lmeval-env  ## Perplexity + GSM8K + IFEval across quantization levels
 	uv run llmbench quality --config configs/sweep.yaml --gpu $(BENCH_GPU)
 
 .PHONY: report

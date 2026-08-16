@@ -153,6 +153,46 @@ def show(
 
 
 @app.command()
+def quality(
+    config: Annotated[Path, typer.Option(help="Sweep matrix YAML")] = Path("configs/sweep.yaml"),
+    gpu: Annotated[int, typer.Option(help="Host GPU index to measure on")] = 1,
+    results: Annotated[Path, typer.Option(help="Where to write quality JSON")] = Path(
+        "results/quality"
+    ),
+    wikitext: Annotated[Path, typer.Option(help="WikiText-2 test parquet")] = Path(
+        "data/wikitext2_test.parquet"
+    ),
+    configs_only: Annotated[
+        str, typer.Option(help="Comma-separated config ids; default is every vLLM config")
+    ] = "",
+    ppl_tokens: Annotated[int, typer.Option(help="Tokens of WikiText-2 to score")] = 100_000,
+    limit: Annotated[int, typer.Option(help="Cap task samples (0 = full set)")] = 0,
+    skip_tasks: Annotated[bool, typer.Option(help="Perplexity only; skip GSM8K/IFEval")] = False,
+) -> None:
+    """Measure perplexity, GSM8K and IFEval through the live engine.
+
+    Runs against the serving engine rather than the raw checkpoint, so the
+    quantized kernels actually under test are the ones being scored.
+    """
+    from llmbench.quality.runner import QualityRunner  # noqa: PLC0415  (torch-free import path)
+
+    cfg = load_sweep_config(config)
+    selected = [c.strip() for c in configs_only.split(",") if c.strip()]
+
+    runner = QualityRunner(
+        cfg,
+        gpu_index=gpu,
+        results_dir=results,
+        wikitext_path=wikitext,
+        ppl_tokens=ppl_tokens,
+        task_limit=limit or None,
+        skip_tasks=skip_tasks,
+    )
+    written = runner.run(config_ids=selected or None)
+    console.print(f"\n[green]wrote {len(written)} quality record(s)[/green] to {results}")
+
+
+@app.command()
 def validate(
     config: Annotated[Path, typer.Option(help="Sweep matrix YAML")] = Path("configs/sweep.yaml"),
 ) -> None:
