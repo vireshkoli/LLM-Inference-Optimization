@@ -21,7 +21,7 @@ from pathlib import Path
 
 from llmbench.config import SweepConfig, load_engine_profile
 from llmbench.engines.base import EngineHandle, EngineLaunchSpec, EngineProcess, resolve_digest
-from llmbench.engines.preflight import run_preflight
+from llmbench.engines.preflight import PreflightReport, run_preflight
 from llmbench.engines.sglang import SglangEngine
 from llmbench.engines.vllm import VllmEngine
 from llmbench.quality.datasets import load_wikitext_tokens
@@ -101,7 +101,14 @@ class QualityRunner:
         )
         return spec, _ENGINES[entry.engine]()
 
-    def measure(self, handle: EngineHandle) -> QualityResult:
+    def measure(self, handle: EngineHandle, preflight: PreflightReport) -> QualityResult:
+        """Score one already-running configuration.
+
+        ``preflight`` is taken *before* the engine starts and passed in. Running
+        it here would check free VRAM while the engine is legitimately holding
+        the 90% it was asked for, and fail every configuration after it had
+        already been measured.
+        """
         spec = handle.spec
         quant = self.config.quantization_for(spec.config_id)
         started = datetime.now(UTC)
@@ -156,12 +163,6 @@ class QualityRunner:
                 # not discard a measurement that cost an engine launch.
                 print(f"  [warn] task benchmarks failed: {exc}")
 
-        preflight = run_preflight(
-            self.gpu_index,
-            results_path=str(self.results_dir),
-            gpu_memory_utilization=spec.gpu_memory_utilization,
-        )
-
         return QualityResult(
             run_id=uuid.uuid4().hex,
             config_id=spec.config_id,
@@ -201,13 +202,26 @@ class QualityRunner:
         for config_id in targets:
             spec, engine = self._launch_spec(config_id)
             print(f"\n=== {config_id} (quality) ===")
+
+            # Before the engine starts, while the device is still idle. Taken
+            # afterwards it would fail on free VRAM that the engine is
+            # legitimately holding.
+            preflight = run_preflight(
+                self.gpu_index,
+                results_path=str(self.results_dir),
+                gpu_memory_utilization=spec.gpu_memory_utilization,
+            )
+            for warning in preflight.warnings:
+                print(f"  [preflight] {warning}")
+
             handle = engine.start(spec)
             print(f"  engine ready (v{handle.engine_version}, kernel={handle.selected_kernel})")
             try:
-                result = self.measure(handle)
+                result = self.measure(handle, preflight)
                 path = self.results_dir / f"{config_id}__quality.json"
                 path.write_text(json.dumps(json.loads(result.model_dump_json()), indent=2) + "\n")
                 written.append(path)
+                print(f"  wrote {path}")
             finally:
                 engine.stop(spec)
                 print("  engine stopped")

@@ -186,10 +186,15 @@ class EngineProcess(ABC):
             # Capture the log before teardown; a container that dies taking its
             # diagnostics with it costs a debugging cycle per failure.
             failure_log = self.logs(spec)
+            saved = self._persist_failure_log(spec, failure_log)
             self.stop(spec)
+            # The tail alone is often useless: a repeated warning can fill it
+            # and push the real exception out of view. The full log is written
+            # to disk and the path reported.
             raise EngineStartupError(
                 f"[{spec.config_id}] engine failed to start cleanly. "
-                f"Last 2000 chars of container log:\n{failure_log[-2000:]}"
+                f"Full container log: {saved}\n"
+                f"Last 1500 chars:\n{failure_log[-1500:]}"
             ) from None
 
         return EngineHandle(
@@ -200,6 +205,23 @@ class EngineProcess(ABC):
             startup_log=log,
             startup_duration_s=time.perf_counter() - began,
         )
+
+    @staticmethod
+    def _persist_failure_log(spec: EngineLaunchSpec, log: str) -> Path:
+        """Write the full container log so a failure is diagnosable later.
+
+        Containers are removed on failure, taking their logs with them, and a
+        tail is often useless — a repeated warning can fill it and push the real
+        exception out of view, which is exactly what happened with the
+        read-only HF cache warnings.
+        """
+        path = Path("results/logs") / f"{spec.config_id}.failure.log"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(log)
+        except OSError:
+            return Path("<unwritable>")
+        return path
 
     def _await_health(self, spec: EngineLaunchSpec, container_id: str) -> None:
         deadline = time.monotonic() + spec.startup_timeout_s
