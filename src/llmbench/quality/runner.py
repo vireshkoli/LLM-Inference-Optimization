@@ -113,7 +113,10 @@ class QualityRunner:
             handle.base_url,
             quant.hf_id,
             tokens,
-            context_len=spec.max_model_len,
+            # max_model_len - 1, not max_model_len. vLLM validates
+            # prompt_len + at-least-one-output-token <= max_model_len even when
+            # max_tokens=0, so a full-length window is rejected with a 400.
+            context_len=spec.max_model_len - 1,
             # Half the context: every token is scored with at least
             # max_model_len/2 tokens of left-context.
             stride=spec.max_model_len // 2,

@@ -27,12 +27,12 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from llmbench.schema import QualityScore, QualityTask
 
-__all__ = ["TASK_METRICS", "HarnessError", "run_lm_eval"]
+__all__ = ["TASK_FEWSHOT", "TASK_METRICS", "HarnessError", "run_lm_eval"]
 
 
 class HarnessError(RuntimeError):
@@ -48,6 +48,19 @@ TASK_METRICS: dict[str, tuple[QualityTask, tuple[str, ...]]] = {
         QualityTask.IFEVAL,
         ("prompt_level_strict_acc,none", "inst_level_strict_acc,none"),
     ),
+}
+
+#: Few-shot count per task, stated explicitly rather than left to lm-eval's
+#: per-task defaults.
+#:
+#: This forces **one invocation per task**: ``--num_fewshot`` applies to every
+#: task in a run, so evaluating both together would either leave GSM8K at
+#: lm-eval's 5-shot default (contradicting the documented 8-shot) or force
+#: few-shot prompting onto IFEval, which is 0-shot by design and whose
+#: verifiable constraints assume it.
+TASK_FEWSHOT: dict[str, int] = {
+    "gsm8k": 8,
+    "ifeval": 0,
 }
 
 
@@ -155,14 +168,35 @@ def _newest_results_file(output_dir: Path) -> Path:
     return candidates[-1]
 
 
+def _run_one_task(
+    config: HarnessConfig, task: str, output_dir: Path, timeout_s: float
+) -> list[QualityScore]:
+    task_dir = output_dir / task
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    per_task = replace(config, num_fewshot=TASK_FEWSHOT.get(task, config.num_fewshot))
+    command = _build_command(per_task, [task], task_dir)
+
+    result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=timeout_s)
+    if result.returncode != 0:
+        msg = f"lm-eval exited {result.returncode} on task {task!r}:\n{result.stderr[-2000:]}"
+        raise HarnessError(msg)
+
+    return parse_lm_eval_results(json.loads(_newest_results_file(task_dir).read_text()))
+
+
 def run_lm_eval(
     config: HarnessConfig, tasks: Sequence[str], output_dir: Path, *, timeout_s: float = 7200.0
 ) -> list[QualityScore]:
-    """Run the harness and return parsed scores.
+    """Run each task in its own invocation and return the combined scores.
+
+    One invocation per task is required, not merely tidier: ``--num_fewshot`` is
+    global to a run, and GSM8K (8-shot) and IFEval (0-shot) need different
+    values. Batching them would silently mis-prompt one of the two.
 
     Raises:
-        HarnessError: If the virtualenv is missing, the harness exits non-zero,
-            or its output contains none of the expected metrics.
+        HarnessError: If the virtualenv is missing, a task exits non-zero, or
+            its output contains none of the expected metrics.
     """
     if not config.venv_python.exists():
         msg = (
@@ -173,12 +207,7 @@ def run_lm_eval(
         raise HarnessError(msg)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    command = _build_command(config, tasks, output_dir)
-
-    result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=timeout_s)
-    if result.returncode != 0:
-        msg = f"lm-eval exited {result.returncode}:\n{result.stderr[-2000:]}"
-        raise HarnessError(msg)
-
-    payload = json.loads(_newest_results_file(output_dir).read_text())
-    return parse_lm_eval_results(payload)
+    scores: list[QualityScore] = []
+    for task in tasks:
+        scores.extend(_run_one_task(config, task, output_dir, timeout_s))
+    return scores

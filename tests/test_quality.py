@@ -8,9 +8,18 @@ number, so both are pinned here.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
+
 import pytest
 
-from llmbench.quality.harness import HarnessError, parse_lm_eval_results
+from llmbench.quality.harness import (
+    TASK_FEWSHOT,
+    HarnessConfig,
+    HarnessError,
+    _build_command,
+    parse_lm_eval_results,
+)
 from llmbench.quality.perplexity import make_windows
 from llmbench.schema import QualityTask
 
@@ -125,3 +134,27 @@ class TestHarnessParsing:
         """Silently returning an empty score list would look like a clean run."""
         with pytest.raises(HarnessError, match="no recognised metrics"):
             parse_lm_eval_results({"results": {"hellaswag": {"acc,none": 0.5}}})
+
+
+class TestPerTaskFewShot:
+    """GSM8K and IFEval need different few-shot counts.
+
+    ``--num_fewshot`` is global to an lm-eval invocation, so evaluating both in
+    one run would either leave GSM8K at lm-eval's 5-shot default — contradicting
+    the documented 8-shot — or force few-shot prompting onto IFEval, which is
+    0-shot by design and whose verifiable constraints assume it.
+    """
+
+    def test_gsm8k_is_eight_shot(self) -> None:
+        assert TASK_FEWSHOT["gsm8k"] == 8
+
+    def test_ifeval_is_zero_shot(self) -> None:
+        assert TASK_FEWSHOT["ifeval"] == 0
+
+    def test_each_task_gets_its_own_fewshot_on_the_command_line(self) -> None:
+        base = HarnessConfig(base_url="http://x", model="m")
+        for task, expected in TASK_FEWSHOT.items():
+            cmd = _build_command(replace(base, num_fewshot=expected), [task], Path("/tmp/x"))
+            assert cmd[cmd.index("--num_fewshot") + 1] == str(expected)
+            # One task per invocation, or the global flag would mis-prompt one.
+            assert cmd[cmd.index("--tasks") + 1] == task

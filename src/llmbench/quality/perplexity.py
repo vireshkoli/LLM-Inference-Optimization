@@ -59,7 +59,10 @@ def make_windows(token_ids: Sequence[int], *, context_len: int, stride: int) -> 
     """Split a token stream into overlapping scoring windows.
 
     Args:
-        context_len: Window size; must not exceed the served ``max_model_len``.
+        context_len: Window size. Must be at most ``max_model_len - 1``, not
+            ``max_model_len``: vLLM validates prompt length plus at least one
+            output token against the context window even when ``max_tokens=0``,
+            so a full-length window is rejected with a 400.
         stride: How far the window advances. A stride below ``context_len``
             gives later tokens more left-context at the cost of more forward
             passes. ``stride == context_len`` degenerates to disjoint chunks,

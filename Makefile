@@ -68,7 +68,9 @@ lmeval-env: .venv-lmeval/bin/python  ## Build the isolated lm-eval environment
 	# Separate venv on purpose: lm-eval depends on torch, and the load generator
 	# must stay light — a heavy client is what this project measures, not ships.
 	uv venv --python 3.12 .venv-lmeval
-	uv pip install --python .venv-lmeval/bin/python "lm-eval[ifeval]==0.4.12"
+	# transformers is needed explicitly: the api-model path imports it for
+	# tokenizer handling but it is not pulled in by the [api] extra.
+	uv pip install --python .venv-lmeval/bin/python "lm-eval[api,ifeval]==0.4.12" transformers
 
 .PHONY: validate
 validate:  ## Validate the sweep matrix without running anything
