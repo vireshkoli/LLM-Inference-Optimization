@@ -306,8 +306,16 @@ class EngineProcess(ABC):
             return ""
         return result.stdout + result.stderr
 
-    def stop(self, spec: EngineLaunchSpec) -> None:
-        """Tear down; safe to call when nothing is running."""
+    def stop(self, spec: EngineLaunchSpec, *, wait_s: float = 60.0) -> None:
+        """Tear down and wait for the name to be free.
+
+        ``docker rm -f`` returns before removal completes. Starting the next
+        container immediately then fails with "can not get logs from container
+        which is dead or marked for removal" — a race that cost one
+        configuration in a four-config sweep, and would be far more expensive
+        part-way through an 18-hour matrix. Safe to call when nothing is
+        running.
+        """
         subprocess.run(
             ["sudo", "docker", "rm", "-f", spec.container_name],
             capture_output=True,
@@ -315,3 +323,16 @@ class EngineProcess(ABC):
             check=False,
             timeout=120,
         )
+
+        deadline = time.monotonic() + wait_s
+        while time.monotonic() < deadline:
+            probe = subprocess.run(
+                ["sudo", "docker", "ps", "-aq", "--filter", f"name=^{spec.container_name}$"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            if not probe.stdout.strip():
+                return
+            time.sleep(1.0)

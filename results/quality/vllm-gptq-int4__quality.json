@@ -1,9 +1,9 @@
 {
   "schema_version": "1.0.0",
-  "run_id": "3dcd3764ef104b08bab366a657a3e869",
-  "config_id": "vllm-bf16",
-  "started_at": "2026-08-18T14:01:10.661369Z",
-  "finished_at": "2026-08-18T15:47:56.513799Z",
+  "run_id": "53225ea681da412595b2d27f0803f989",
+  "config_id": "vllm-gptq-int4",
+  "started_at": "2026-08-18T16:41:48.216917Z",
+  "finished_at": "2026-08-18T17:02:58.575818Z",
   "engine": {
     "name": "vllm",
     "version": "0.26.0",
@@ -12,16 +12,16 @@
     "tensor_parallel_size": 1,
     "gpu_memory_utilization": 0.9,
     "max_num_seqs": 256,
-    "selected_kernel": null,
+    "selected_kernel": "gptq_marlin",
     "extra_args": {}
   },
   "model": {
-    "hf_id": "meta-llama/Llama-3.1-8B-Instruct",
-    "revision": "0e9e39f249a16976918f6564b8830bc894c89659",
-    "quantization": "bf16",
-    "dtype": "bfloat16",
+    "hf_id": "RedHatAI/Meta-Llama-3.1-8B-Instruct-quantized.w4a16",
+    "revision": "6a426ef8adc0b4b96408001a9628d71f01c9ceca",
+    "quantization": "gptq-int4",
+    "dtype": "auto",
     "max_model_len": 4096,
-    "weights_gib": 15.0
+    "weights_gib": 5.7
   },
   "hardware": {
     "gpu": {
@@ -56,35 +56,35 @@
     {
       "task": "wikitext2-ppl",
       "metric": "perplexity",
-      "value": 6.354564034112831,
+      "value": 6.864249268268346,
       "stderr": null,
       "num_samples": 99999
     },
     {
       "task": "gsm8k",
       "metric": "exact_match,strict-match",
-      "value": 0.7285822592873389,
-      "stderr": 0.012249002026150603,
+      "value": 0.7407126611068992,
+      "stderr": 0.01207140536990549,
       "num_samples": 1319
     },
     {
       "task": "gsm8k",
       "metric": "exact_match,flexible-extract",
-      "value": 0.7831690674753601,
-      "stderr": 0.011350909906677524,
+      "value": 0.7490523123578469,
+      "stderr": 0.011942354768308832,
       "num_samples": 1319
     },
     {
       "task": "ifeval",
       "metric": "prompt_level_strict_acc,none",
-      "value": 0.4602587800369686,
-      "stderr": 0.021448501434135032,
+      "value": 0.7375231053604436,
+      "stderr": 0.0189337428760446,
       "num_samples": 541
     },
     {
       "task": "ifeval",
       "metric": "inst_level_strict_acc,none",
-      "value": 0.6019184652278178,
+      "value": 0.8105515587529976,
       "stderr": null,
       "num_samples": 541
     }
