@@ -29,7 +29,7 @@ from pathlib import Path
 
 import httpx
 
-from llmbench.engines.kernels import assert_kernel
+from llmbench.engines.kernels import KernelMismatchError, assert_kernel
 
 __all__ = ["EngineHandle", "EngineLaunchSpec", "EngineProcess", "EngineStartupError"]
 
@@ -182,6 +182,14 @@ class EngineProcess(ABC):
                 spec.kernel_log_patterns,
                 config_id=spec.config_id,
             )
+        except KernelMismatchError as exc:
+            # The engine came up fine; it is serving on the wrong kernel path.
+            # Reporting this as a startup failure sends the reader hunting
+            # through container logs for a crash that never happened.
+            saved = self._persist_failure_log(spec, self.logs(spec))
+            self.stop(spec)
+            exc.add_note(f"Engine started successfully. Full startup log: {saved}")
+            raise
         except Exception:
             # Capture the log before teardown; a container that dies taking its
             # diagnostics with it costs a debugging cycle per failure.

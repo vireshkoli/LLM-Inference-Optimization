@@ -14,6 +14,8 @@ from pathlib import Path
 import pytest
 
 from llmbench.quality.harness import (
+    TASK_BACKEND,
+    TASK_CHAT_TEMPLATE,
     TASK_FEWSHOT,
     HarnessConfig,
     HarnessError,
@@ -158,3 +160,44 @@ class TestPerTaskFewShot:
             assert cmd[cmd.index("--num_fewshot") + 1] == str(expected)
             # One task per invocation, or the global flag would mis-prompt one.
             assert cmd[cmd.index("--tasks") + 1] == task
+
+
+class TestTaskBackendRouting:
+    """IFEval must be served through the chat endpoint, GSM8K through raw completions.
+
+    Measured on Llama-3.1-8B-Instruct BF16, running IFEval through raw
+    /v1/completions with no chat template gave prompt_level_strict_acc 0.4603
+    against 0.7000 with the template — a ~24-point artifact of prompting, not of
+    the model, and ~32 points below published. An instruct model on the raw
+    completions endpoint continues text instead of following instructions.
+    """
+
+    def test_ifeval_uses_the_chat_endpoint_with_a_template(self) -> None:
+        backend, endpoint = TASK_BACKEND["ifeval"]
+        assert backend == "local-chat-completions"
+        assert endpoint == "/v1/chat/completions"
+        assert TASK_CHAT_TEMPLATE["ifeval"] is True
+
+    def test_gsm8k_uses_raw_completions_without_a_template(self) -> None:
+        """8-shot exemplars establish the pattern; this is the conventional
+        few-shot setup and reproduces published numbers."""
+        backend, endpoint = TASK_BACKEND["gsm8k"]
+        assert backend == "local-completions"
+        assert endpoint == "/v1/completions"
+        assert TASK_CHAT_TEMPLATE["gsm8k"] is False
+
+    def test_command_carries_the_right_backend_and_url_per_task(self) -> None:
+        base = HarnessConfig(base_url="http://127.0.0.1:8000", model="m")
+        for task, (backend, endpoint) in TASK_BACKEND.items():
+            cmd = _build_command(
+                replace(
+                    base,
+                    num_fewshot=TASK_FEWSHOT[task],
+                    apply_chat_template=TASK_CHAT_TEMPLATE[task],
+                ),
+                [task],
+                Path("/tmp/x"),
+            )
+            assert cmd[cmd.index("--model") + 1] == backend
+            assert any(f"base_url=http://127.0.0.1:8000{endpoint}" in a for a in cmd)
+            assert ("--apply_chat_template" in cmd) is TASK_CHAT_TEMPLATE[task]

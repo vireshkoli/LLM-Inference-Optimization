@@ -50,10 +50,17 @@ args:
 # Regexes used to assert which kernel the engine actually selected, parsed from
 # startup logs. A checkpoint that silently falls off the fast path is the single
 # most expensive failure mode in this project, so it is detected at launch.
+#
+# VERIFIED against real vLLM v0.26.0 output, which prints e.g.
+#   [auto_gptq.py:357] Using MarlinLinearKernel for AutoGPTQLinearMethod
+# NOT the older "gptq_marlin" spelling. Patterns match the kernel/method pairing
+# so they survive either wording. Order matters: specific before generic.
 kernel_log_patterns:
-  gptq_marlin: "(?i)using\\s+gptq_?marlin|gptq_marlin"
-  awq_marlin: "(?i)using\\s+awq_?marlin|awq_marlin"
-  compressed-tensors-w8a8-int8: "(?i)compressed[- ]tensors|cutlass.*int8|w8a8"
-  marlin_generic: "(?i)\\bmarlin\\b"
+  gptq_marlin: "(?i)(gptq_?marlin|marlinlinearkernel[^\\n]*gptqlinearmethod)"
+  awq_marlin: "(?i)(awq_?marlin|marlinlinearkernel[^\\n]*awqlinearmethod)"
+  compressed-tensors-w8a8-int8: "(?i)(cutlass[a-z]*scaledmm|compressedtensorsw8a8|compressed[- ]tensors[^\\n]*w8a8|w8a8[^\\n]*int8)"
+  # Deliberately no \b after "marlin": the real log says "MarlinLinearKernel",
+  # and a word boundary there matches nothing.
+  marlin_generic: "(?i)marlin"
 
 startup_timeout_s: 600

@@ -32,7 +32,14 @@ from pathlib import Path
 
 from llmbench.schema import QualityScore, QualityTask
 
-__all__ = ["TASK_FEWSHOT", "TASK_METRICS", "HarnessError", "run_lm_eval"]
+__all__ = [
+    "TASK_BACKEND",
+    "TASK_CHAT_TEMPLATE",
+    "TASK_FEWSHOT",
+    "TASK_METRICS",
+    "HarnessError",
+    "run_lm_eval",
+]
 
 
 class HarnessError(RuntimeError):
@@ -63,6 +70,41 @@ TASK_FEWSHOT: dict[str, int] = {
     "ifeval": 0,
 }
 
+#: Which lm-eval backend and endpoint each task is served through.
+#:
+#: Not interchangeable. IFEval is a 0-shot *instruction-following* benchmark and
+#: must go through /v1/chat/completions so the server applies the model's chat
+#: template; through raw /v1/completions an instruct model merely continues text
+#: and the score collapses. Measured on Llama-3.1-8B-Instruct BF16:
+#:
+#:     prompt_level_strict_acc   0.4603 raw  ->  0.7000 templated
+#:     inst_level_strict_acc     0.6019 raw  ->  0.7937 templated
+#:
+#: GSM8K stays on raw completions: its 8-shot exemplars establish the pattern
+#: without a template, which is the conventional few-shot setup and reproduces
+#: published numbers here (0.7286 strict / 0.7832 flexible).
+TASK_BACKEND: dict[str, tuple[str, str]] = {
+    "gsm8k": ("local-completions", "/v1/completions"),
+    "ifeval": ("local-chat-completions", "/v1/chat/completions"),
+}
+
+#: Whether a task needs the model's chat template applied.
+#:
+#: This is not cosmetic. IFEval is a 0-shot *instruction-following* benchmark:
+#: served through raw /v1/completions with no template, an instruct model simply
+#: continues the text instead of behaving as an assistant, and the score
+#: collapses. Measured on Llama-3.1-8B-Instruct BF16, prompt-level strict
+#: accuracy was 0.4603 without the template against ~0.78-0.80 published — a
+#: ~32-point gap that is an artifact of prompting, not of the model.
+#:
+#: GSM8K deliberately stays off: its 8-shot exemplars establish the pattern
+#: without a template, which is the conventional few-shot completion setup and
+#: reproduces published numbers (0.7286 strict / 0.7832 flexible here).
+TASK_CHAT_TEMPLATE: dict[str, bool] = {
+    "gsm8k": False,
+    "ifeval": True,
+}
+
 
 @dataclass(frozen=True, slots=True)
 class HarnessConfig:
@@ -78,13 +120,17 @@ class HarnessConfig:
     max_concurrent: int = 4
     num_fewshot: int | None = None
     limit: int | None = None
+    #: Apply the model's chat template. Required for instruction-following
+    #: tasks; see TASK_CHAT_TEMPLATE.
+    apply_chat_template: bool = False
 
 
 def _build_command(config: HarnessConfig, tasks: Sequence[str], output_dir: Path) -> list[str]:
+    backend, endpoint = TASK_BACKEND.get(tasks[0], ("local-completions", "/v1/completions"))
     model_args = ",".join(
         [
             f"model={config.model}",
-            f"base_url={config.base_url.rstrip('/')}/v1/completions",
+            f"base_url={config.base_url.rstrip('/')}{endpoint}",
             f"num_concurrent={config.max_concurrent}",
             "tokenized_requests=False",
             "max_retries=3",
@@ -96,7 +142,7 @@ def _build_command(config: HarnessConfig, tasks: Sequence[str], output_dir: Path
         "lm_eval",
         # Talks to the running server over HTTP; no second copy of the model.
         "--model",
-        "local-completions",
+        backend,
         "--model_args",
         model_args,
         "--tasks",
@@ -109,6 +155,8 @@ def _build_command(config: HarnessConfig, tasks: Sequence[str], output_dir: Path
         "--seed",
         "0",
     ]
+    if config.apply_chat_template:
+        command.append("--apply_chat_template")
     if config.num_fewshot is not None:
         command += ["--num_fewshot", str(config.num_fewshot)]
     if config.limit is not None:
@@ -174,7 +222,11 @@ def _run_one_task(
     task_dir = output_dir / task
     task_dir.mkdir(parents=True, exist_ok=True)
 
-    per_task = replace(config, num_fewshot=TASK_FEWSHOT.get(task, config.num_fewshot))
+    per_task = replace(
+        config,
+        num_fewshot=TASK_FEWSHOT.get(task, config.num_fewshot),
+        apply_chat_template=TASK_CHAT_TEMPLATE.get(task, config.apply_chat_template),
+    )
     command = _build_command(per_task, [task], task_dir)
 
     result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=timeout_s)

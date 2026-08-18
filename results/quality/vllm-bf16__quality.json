@@ -1,0 +1,92 @@
+{
+  "schema_version": "1.0.0",
+  "run_id": "3dcd3764ef104b08bab366a657a3e869",
+  "config_id": "vllm-bf16",
+  "started_at": "2026-08-18T14:01:10.661369Z",
+  "finished_at": "2026-08-18T15:47:56.513799Z",
+  "engine": {
+    "name": "vllm",
+    "version": "0.26.0",
+    "image": "vllm/vllm-openai:v0.26.0",
+    "image_digest": "sha256:ffb2d59b1c059a5bd8d781320c9f5189de8293693b7d95da54befddaa54abf52",
+    "tensor_parallel_size": 1,
+    "gpu_memory_utilization": 0.9,
+    "max_num_seqs": 256,
+    "selected_kernel": null,
+    "extra_args": {}
+  },
+  "model": {
+    "hf_id": "meta-llama/Llama-3.1-8B-Instruct",
+    "revision": "0e9e39f249a16976918f6564b8830bc894c89659",
+    "quantization": "bf16",
+    "dtype": "bfloat16",
+    "max_model_len": 4096,
+    "weights_gib": 15.0
+  },
+  "hardware": {
+    "gpu": {
+      "index": 1,
+      "name": "NVIDIA A40",
+      "compute_capability": "8.6",
+      "vram_total_mib": 46068,
+      "driver_version": "570.133.07",
+      "cuda_version": "12.8",
+      "ecc_enabled": true
+    },
+    "host": {
+      "hostname": "vireshvm",
+      "cpu_model": "x86_64",
+      "cpu_count": 16,
+      "ram_total_gib": 31.342254638671875,
+      "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.31",
+      "python_version": "3.12.13"
+    },
+    "clocks": {
+      "locked": true,
+      "sm_clock_mhz": 1740,
+      "mem_clock_mhz": null,
+      "persistence_mode": true
+    },
+    "neighbor_gpu_busy": true
+  },
+  "temperature": 0.0,
+  "seed": 20260810,
+  "max_concurrency": 4,
+  "scores": [
+    {
+      "task": "wikitext2-ppl",
+      "metric": "perplexity",
+      "value": 6.354564034112831,
+      "stderr": null,
+      "num_samples": 99999
+    },
+    {
+      "task": "gsm8k",
+      "metric": "exact_match,strict-match",
+      "value": 0.7285822592873389,
+      "stderr": 0.012249002026150603,
+      "num_samples": 1319
+    },
+    {
+      "task": "gsm8k",
+      "metric": "exact_match,flexible-extract",
+      "value": 0.7831690674753601,
+      "stderr": 0.011350909906677524,
+      "num_samples": 1319
+    },
+    {
+      "task": "ifeval",
+      "metric": "prompt_level_strict_acc,none",
+      "value": 0.4602587800369686,
+      "stderr": 0.021448501434135032,
+      "num_samples": 541
+    },
+    {
+      "task": "ifeval",
+      "metric": "inst_level_strict_acc,none",
+      "value": 0.6019184652278178,
+      "stderr": null,
+      "num_samples": 541
+    }
+  ]
+}
