@@ -138,3 +138,25 @@ class TestContextClamping:
         assert all(p.total_tokens <= 1500 for p in clamped)
         # The 1024/700 pair overflows 1500 and must have been trimmed.
         assert any(p.input_tokens == 1024 and p.output_tokens == 476 for p in clamped)
+
+
+class TestContextFilteringAtLoad:
+    """A prompt longer than the context window must never reach the sampler.
+
+    Found by the real sweep, not by tests: the smoke run draws too few samples
+    to hit the tail, but a 180 s run at 4 rps drew a 4634-token ShareGPT prompt
+    against max_model_len=4096. clamp_to_context correctly refuses to truncate
+    the prompt — doing so would change the prefill work being measured — so the
+    filtering has to happen when the corpus is loaded.
+    """
+
+    def test_clamp_still_refuses_to_truncate_a_prompt(self) -> None:
+        """The guard stays: silently trimming a prompt would misreport the
+        input distribution the run claims to have offered."""
+        with pytest.raises(ValueError, match="leaves no room"):
+            clamp_to_context([LengthPair(4634, 100)], max_model_len=4096)
+
+    def test_a_prompt_at_the_boundary_is_clampable(self) -> None:
+        clamped = clamp_to_context([LengthPair(4095, 500)], max_model_len=4096)
+        assert clamped[0].input_tokens == 4095
+        assert clamped[0].output_tokens == 1

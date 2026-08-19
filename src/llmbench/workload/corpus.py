@@ -36,6 +36,10 @@ class ShareGptCorpus:
     #: Concatenated human-turn tokens. Prompts are sliced from this so they look
     #: like real text while still having exact token lengths.
     corpus_token_ids: tuple[int, ...]
+    #: Conversations dropped because the prompt alone exceeded the context
+    #: window. Reported rather than hidden: it is a (small) truncation of the
+    #: real length distribution and a reader should be able to see its size.
+    excluded_long_prompt: int = 0
 
     def __len__(self) -> int:
         return len(self.pairs)
@@ -64,6 +68,7 @@ def load_sharegpt(
     min_input_tokens: int = 4,
     min_output_tokens: int = 4,
     max_total_tokens: int = 8192,
+    max_input_tokens: int | None = None,
     corpus_token_budget: int = 2_000_000,
 ) -> ShareGptCorpus:
     """Load and tokenize ShareGPT conversations.
@@ -76,6 +81,12 @@ def load_sharegpt(
             handful of outliers that would be clamped to the context window
             anyway, and keeping them would skew the sampled distribution toward
             lengths that never actually get issued.
+        max_input_tokens: Discard exchanges whose *prompt alone* exceeds this.
+            Should be ``max_model_len - min_output_tokens``: a prompt longer
+            than the context window cannot be served at all, and cannot be
+            clamped either, because trimming the prompt would change the
+            prefill work the run exists to measure. Filtering at load keeps the
+            pool to requests the server can actually accept.
 
     Raises:
         FileNotFoundError: If the dataset is absent.
@@ -93,6 +104,7 @@ def load_sharegpt(
 
     pairs: list[LengthPair] = []
     corpus: list[int] = []
+    excluded_long_prompt = 0
 
     for record in raw[:max_conversations]:
         conversation = record.get("conversations") or []
@@ -109,6 +121,10 @@ def load_sharegpt(
             continue
         if n_in + n_out > max_total_tokens:
             continue
+        if max_input_tokens is not None and n_in > max_input_tokens:
+            # Unservable: longer than the context window on its own.
+            excluded_long_prompt += 1
+            continue
 
         pairs.append(LengthPair(input_tokens=n_in, output_tokens=n_out))
         if len(corpus) < corpus_token_budget:
@@ -118,4 +134,8 @@ def load_sharegpt(
         msg = f"no usable conversations parsed from {dataset_path}"
         raise ValueError(msg)
 
-    return ShareGptCorpus(pairs=tuple(pairs), corpus_token_ids=tuple(corpus))
+    return ShareGptCorpus(
+        pairs=tuple(pairs),
+        corpus_token_ids=tuple(corpus),
+        excluded_long_prompt=excluded_long_prompt,
+    )

@@ -78,7 +78,11 @@ validate:  ## Validate the sweep matrix without running anything
 
 .PHONY: bench-smoke
 bench-smoke: data  ## ~6 min pipeline validation. The gate before the full sweep.
-	uv run llmbench sweep --config configs/smoke.yaml --gpu $(BENCH_GPU)
+	# Writes to results/smoke, NOT results/runs. Smoke runs use a 30 s window
+	# against the sweep's 180 s; sharing a directory means an interrupted sweep
+	# can leave a smoke result behind to be analysed as a real measurement.
+	uv run llmbench sweep --config configs/smoke.yaml --gpu $(BENCH_GPU) \
+	  --results results/smoke --no-charts
 
 .PHONY: bench
 bench: data  ## Full sweep matrix (~18 GPU-hours). Run bench-smoke first.

@@ -179,7 +179,20 @@ class SweepRunner:
             tokenizer = load_tokenizer(
                 self.config.model.hf_id, self.config.model.revision, self.hf_cache_dir
             )
-            self._corpus = load_sharegpt(self.dataset_path, tokenizer)
+            # Filter at load: a prompt longer than the context window cannot be
+            # served, and cannot be clamped either without changing the prefill
+            # work being measured. Reserve room for at least one output token.
+            self._corpus = load_sharegpt(
+                self.dataset_path,
+                tokenizer,
+                max_input_tokens=self.config.model.max_model_len - 1,
+            )
+            if self._corpus.excluded_long_prompt:
+                print(
+                    f"  [workload] excluded {self._corpus.excluded_long_prompt} conversation(s) "
+                    f"whose prompt exceeded max_model_len="
+                    f"{self.config.model.max_model_len}"
+                )
         return self._corpus
 
     def rate_point(self, rate_rps: float) -> RatePoint:
