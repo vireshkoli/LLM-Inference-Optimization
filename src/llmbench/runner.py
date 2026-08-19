@@ -378,8 +378,8 @@ class SweepRunner:
     # ------------------------------------------------------------------
     # Driving
     # ------------------------------------------------------------------
-    def run(self) -> list[Path]:
-        """Execute the whole matrix. Returns the paths written."""
+    def run(self, config_ids: list[str] | None = None) -> list[Path]:
+        """Execute the matrix (or a named subset). Returns the paths written."""
         self.results_dir.mkdir(parents=True, exist_ok=True)
         (self.results_dir.parent / "raw").mkdir(parents=True, exist_ok=True)
 
@@ -394,7 +394,13 @@ class SweepRunner:
 
         written: list[Path] = []
 
-        for entry in self.config.configurations:
+        targets = (
+            [self.config.configuration(cid) for cid in config_ids]
+            if config_ids
+            else list(self.config.configurations)
+        )
+
+        for entry in targets:
             profile = load_engine_profile(entry.engine, self.configs_dir)
             engine = _ENGINES[entry.engine]()
             spec = self._launch_spec(entry.id, profile)

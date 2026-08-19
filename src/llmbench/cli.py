@@ -59,10 +59,21 @@ def sweep(
     require_locked_clocks: Annotated[
         bool, typer.Option(help="Refuse to run unless GPU clocks are pinned")
     ] = False,
+    configs_only: Annotated[
+        str, typer.Option(help="Comma-separated config ids; default is the whole matrix")
+    ] = "",
     charts: Annotated[bool, typer.Option(help="Regenerate figures afterwards")] = True,
 ) -> None:
-    """Execute a sweep matrix."""
+    """Execute a sweep matrix.
+
+    ``--configs-only`` exists for interruptibility. The matrix takes ~18
+    GPU-hours, and on a shared machine the card can be reclaimed part-way
+    through; each (config, rate, repeat) is written as its own validated JSON,
+    so a reclaimed GPU costs one measurement and the remaining configurations
+    can be resumed by name rather than restarting the sweep.
+    """
     cfg = load_sweep_config(config)
+    selected = [c.strip() for c in configs_only.split(",") if c.strip()]
     console.print(
         f"[bold]{config.name}[/bold]: {len(cfg.configurations)} configuration(s) x "
         f"{len(cfg.workload.request_rates_rps)} rate(s) x {cfg.defaults.repeats} repeat(s) "
@@ -77,7 +88,7 @@ def sweep(
         dataset_path=dataset,
         require_locked_clocks=require_locked_clocks,
     )
-    written = runner.run()
+    written = runner.run(config_ids=selected or None)
     console.print(f"\n[green]wrote {len(written)} result file(s)[/green] to {results}")
 
     if charts:
