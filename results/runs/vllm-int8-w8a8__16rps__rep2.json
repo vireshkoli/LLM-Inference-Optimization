@@ -1,0 +1,190 @@
+{
+  "schema_version": "1.1.0",
+  "run_id": "ea1d1b4e2b654cd18d04e52c5347917e",
+  "config_id": "vllm-int8-w8a8",
+  "repeat_index": 2,
+  "started_at": "2026-08-19T14:10:10.732669Z",
+  "finished_at": "2026-08-19T14:16:32.555037Z",
+  "engine": {
+    "name": "vllm",
+    "version": "0.26.0",
+    "image": "vllm/vllm-openai:v0.26.0",
+    "image_digest": "sha256:ffb2d59b1c059a5bd8d781320c9f5189de8293693b7d95da54befddaa54abf52",
+    "tensor_parallel_size": 1,
+    "gpu_memory_utilization": 0.9,
+    "max_num_seqs": 256,
+    "selected_kernel": "compressed-tensors-w8a8-int8",
+    "extra_args": {}
+  },
+  "model": {
+    "hf_id": "RedHatAI/Meta-Llama-3.1-8B-Instruct-quantized.w8a8",
+    "revision": "0b61d8e14c48b90ae6c33118a9034616623e2530",
+    "quantization": "int8-w8a8",
+    "dtype": "auto",
+    "max_model_len": 4096,
+    "weights_gib": 8.5
+  },
+  "workload": {
+    "arrival_process": "poisson",
+    "request_rate_rps": 16.0,
+    "length_source": "sharegpt",
+    "seed": 20260810,
+    "num_requests": 2880,
+    "warmup_requests": 50,
+    "measurement_duration_s": 378.44740503747016,
+    "ignore_eos": true,
+    "input_len_tokens": {
+      "count": 2880,
+      "mean": 166.3607638888889,
+      "std": 427.3342434363356,
+      "min": 3.0,
+      "p50": 26.0,
+      "p90": 403.39999999999964,
+      "p95": 953.0999999999995,
+      "p99": 2452.21,
+      "max": 3950.0
+    },
+    "output_len_tokens": {
+      "count": 2878,
+      "mean": 298.8429464906185,
+      "std": 199.5988863483085,
+      "min": 4.0,
+      "p50": 266.0,
+      "p90": 609.3000000000002,
+      "p95": 731.0,
+      "p99": 770.0,
+      "max": 1395.0
+    }
+  },
+  "hardware": {
+    "gpu": {
+      "index": 1,
+      "name": "NVIDIA A40",
+      "compute_capability": "8.6",
+      "vram_total_mib": 46068,
+      "driver_version": "570.133.07",
+      "cuda_version": "12.8",
+      "ecc_enabled": true
+    },
+    "host": {
+      "hostname": "vireshvm",
+      "cpu_model": "x86_64",
+      "cpu_count": 16,
+      "ram_total_gib": 31.342254638671875,
+      "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.31",
+      "python_version": "3.12.13"
+    },
+    "clocks": {
+      "locked": true,
+      "sm_clock_mhz": 1740,
+      "mem_clock_mhz": null,
+      "persistence_mode": true
+    },
+    "neighbor_gpu_busy": false
+  },
+  "requests_sent": 2880,
+  "requests_completed": 2878,
+  "requests_failed": 2,
+  "ttft_s": {
+    "count": 2878,
+    "mean": 73.94111138426999,
+    "std": 53.254003348809995,
+    "min": 0.09869247395545244,
+    "p50": 70.84683621814474,
+    "p90": 148.91654850458727,
+    "p95": 155.08983710277826,
+    "p99": 164.21749329651706,
+    "max": 166.52688620332628
+  },
+  "tpot_s": {
+    "count": 2878,
+    "mean": 0.10425086712931432,
+    "std": 0.01620749208920588,
+    "min": 0.0329117781736634,
+    "p50": 0.10987258091369077,
+    "p90": 0.1159249379501596,
+    "p95": 0.11951449425582467,
+    "p99": 0.12787193643499717,
+    "max": 0.16380158312884824
+  },
+  "e2e_latency_s": {
+    "count": 2878,
+    "mean": 104.77297239599405,
+    "std": 56.409853126490646,
+    "min": 0.8259283741936088,
+    "p50": 107.45992764411494,
+    "p90": 179.31769032832236,
+    "p95": 189.40830411533824,
+    "p99": 203.64253382988275,
+    "max": 210.61017030943185
+  },
+  "output_tokens": {
+    "count": 2878,
+    "mean": 298.8429464906185,
+    "std": 199.5988863483085,
+    "min": 4.0,
+    "p50": 266.0,
+    "p90": 609.3000000000002,
+    "p95": 731.0,
+    "p99": 770.0,
+    "max": 1395.0
+  },
+  "output_token_throughput": 2272.627552869187,
+  "request_throughput": 7.604755539848526,
+  "dispatch_lag_s": {
+    "count": 2880,
+    "mean": 0.011802403512087443,
+    "std": 0.02030249872898965,
+    "min": 9.033828973770142e-06,
+    "p50": 0.0015891874209046364,
+    "p90": 0.03586855037137866,
+    "p95": 0.0472499843686819,
+    "p99": 0.07636678031645723,
+    "max": 0.27339404821395874
+  },
+  "gpu_telemetry": {
+    "sample_count": 359,
+    "temperature_c": {
+      "count": 359,
+      "mean": 70.91364902506963,
+      "std": 1.358275081546761,
+      "min": 57.0,
+      "p50": 71.0,
+      "p90": 72.0,
+      "p95": 72.0,
+      "p99": 72.0,
+      "max": 72.0
+    },
+    "sm_clock_mhz": {
+      "count": 359,
+      "mean": 1599.7353760445683,
+      "std": 46.79415781227378,
+      "min": 1500.0,
+      "p50": 1590.0,
+      "p90": 1650.0,
+      "p95": 1695.0,
+      "p99": 1740.0,
+      "max": 1740.0
+    },
+    "power_w": {
+      "count": 359,
+      "mean": 297.42871866295263,
+      "std": 11.653585292465161,
+      "min": 116.73,
+      "p50": 298.84,
+      "p90": 300.81800000000004,
+      "p95": 301.47200000000004,
+      "p99": 302.1572,
+      "max": 305.68
+    },
+    "memory_used_mib_max": 41513,
+    "throttle_reasons_observed": [
+      "sw_power_cap"
+    ],
+    "throttled_fraction": 0.0
+  },
+  "validity": "oversubscribed",
+  "validity_notes": [
+    "achieved only 7.60 of 16.00 offered req/s (48%) \u2014 the server did not keep up, so the queue grew without bound and latency reflects run duration rather than steady state"
+  ]
+}

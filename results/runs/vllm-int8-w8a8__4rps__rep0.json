@@ -1,0 +1,188 @@
+{
+  "schema_version": "1.1.0",
+  "run_id": "2b362f605481456081ec817e3f0b96e0",
+  "config_id": "vllm-int8-w8a8",
+  "repeat_index": 0,
+  "started_at": "2026-08-19T13:17:55.564705Z",
+  "finished_at": "2026-08-19T13:21:31.555044Z",
+  "engine": {
+    "name": "vllm",
+    "version": "0.26.0",
+    "image": "vllm/vllm-openai:v0.26.0",
+    "image_digest": "sha256:ffb2d59b1c059a5bd8d781320c9f5189de8293693b7d95da54befddaa54abf52",
+    "tensor_parallel_size": 1,
+    "gpu_memory_utilization": 0.9,
+    "max_num_seqs": 256,
+    "selected_kernel": "compressed-tensors-w8a8-int8",
+    "extra_args": {}
+  },
+  "model": {
+    "hf_id": "RedHatAI/Meta-Llama-3.1-8B-Instruct-quantized.w8a8",
+    "revision": "0b61d8e14c48b90ae6c33118a9034616623e2530",
+    "quantization": "int8-w8a8",
+    "dtype": "auto",
+    "max_model_len": 4096,
+    "weights_gib": 8.5
+  },
+  "workload": {
+    "arrival_process": "poisson",
+    "request_rate_rps": 4.0,
+    "length_source": "sharegpt",
+    "seed": 20260810,
+    "num_requests": 720,
+    "warmup_requests": 50,
+    "measurement_duration_s": 202.7835993990302,
+    "ignore_eos": true,
+    "input_len_tokens": {
+      "count": 720,
+      "mean": 142.1861111111111,
+      "std": 340.97021509932,
+      "min": 4.0,
+      "p50": 27.0,
+      "p90": 349.9000000000002,
+      "p95": 779.05,
+      "p99": 1769.6899999999919,
+      "max": 2895.0
+    },
+    "output_len_tokens": {
+      "count": 720,
+      "mean": 303.48333333333335,
+      "std": 199.11022142968397,
+      "min": 5.0,
+      "p50": 268.0,
+      "p90": 588.5000000000001,
+      "p95": 731.3499999999997,
+      "p99": 769.0,
+      "max": 1395.0
+    }
+  },
+  "hardware": {
+    "gpu": {
+      "index": 1,
+      "name": "NVIDIA A40",
+      "compute_capability": "8.6",
+      "vram_total_mib": 46068,
+      "driver_version": "570.133.07",
+      "cuda_version": "12.8",
+      "ecc_enabled": true
+    },
+    "host": {
+      "hostname": "vireshvm",
+      "cpu_model": "x86_64",
+      "cpu_count": 16,
+      "ram_total_gib": 31.342254638671875,
+      "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.31",
+      "python_version": "3.12.13"
+    },
+    "clocks": {
+      "locked": true,
+      "sm_clock_mhz": 1740,
+      "mem_clock_mhz": null,
+      "persistence_mode": true
+    },
+    "neighbor_gpu_busy": false
+  },
+  "requests_sent": 720,
+  "requests_completed": 720,
+  "requests_failed": 0,
+  "ttft_s": {
+    "count": 720,
+    "mean": 0.09542019021205811,
+    "std": 0.03051994166646512,
+    "min": 0.05861889664083719,
+    "p50": 0.08977435482665896,
+    "p90": 0.11217798683792352,
+    "p95": 0.12615835191681976,
+    "p99": 0.21919895170256465,
+    "max": 0.4133974313735962
+  },
+  "tpot_s": {
+    "count": 720,
+    "mean": 0.022377297347005977,
+    "std": 0.0017952644794734986,
+    "min": 0.01837806709954748,
+    "p50": 0.02186007276840164,
+    "p90": 0.02505554345569165,
+    "p95": 0.02542323471373577,
+    "p99": 0.026624298230952276,
+    "max": 0.029077371335862315
+  },
+  "e2e_latency_s": {
+    "count": 720,
+    "mean": 6.859699837906131,
+    "std": 4.497506196082749,
+    "min": 0.18210567347705364,
+    "p50": 6.066917980089784,
+    "p90": 13.62899818122387,
+    "p95": 16.15354487146251,
+    "p99": 18.55467260606586,
+    "max": 30.004373097792268
+  },
+  "output_tokens": {
+    "count": 720,
+    "mean": 303.48333333333335,
+    "std": 199.11022142968397,
+    "min": 5.0,
+    "p50": 268.0,
+    "p90": 588.5000000000001,
+    "p95": 731.3499999999997,
+    "p99": 769.0,
+    "max": 1395.0
+  },
+  "output_token_throughput": 1077.5427630615625,
+  "request_throughput": 3.5505829965233535,
+  "dispatch_lag_s": {
+    "count": 720,
+    "mean": 0.00218651606183913,
+    "std": 0.0020146658342183182,
+    "min": 2.8399750590324402e-05,
+    "p50": 0.0012368005700409412,
+    "p90": 0.00531231937929988,
+    "p95": 0.006538661662489175,
+    "p99": 0.008404928417876352,
+    "max": 0.010983480140566826
+  },
+  "gpu_telemetry": {
+    "sample_count": 205,
+    "temperature_c": {
+      "count": 205,
+      "mean": 68.53658536585365,
+      "std": 1.7737594218537953,
+      "min": 57.0,
+      "p50": 69.0,
+      "p90": 70.0,
+      "p95": 71.0,
+      "p99": 71.0,
+      "max": 71.0
+    },
+    "sm_clock_mhz": {
+      "count": 205,
+      "mean": 1725.9512195121952,
+      "std": 32.327554673926656,
+      "min": 1500.0,
+      "p50": 1725.0,
+      "p90": 1740.0,
+      "p95": 1740.0,
+      "p99": 1740.0,
+      "max": 1740.0
+    },
+    "power_w": {
+      "count": 205,
+      "mean": 279.3420487804878,
+      "std": 15.94792148541425,
+      "min": 116.61,
+      "p50": 279.79,
+      "p90": 294.644,
+      "p95": 298.13599999999997,
+      "p99": 300.3236,
+      "max": 301.35
+    },
+    "memory_used_mib_max": 41513,
+    "throttle_reasons_observed": [
+      "sw_power_cap"
+    ],
+    "throttled_fraction": 0.0
+  },
+  "validity": "valid",
+  "validity_notes": []
+}

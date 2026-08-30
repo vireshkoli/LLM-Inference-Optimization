@@ -22,7 +22,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Bumped only on a breaking change. tests/test_schema.py guards this.
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 
 NonNegFloat = Annotated[float, Field(ge=0.0)]
 PosInt = Annotated[int, Field(gt=0)]
@@ -83,6 +83,12 @@ class RunValidity(StrEnum):
     """
 
     VALID = "valid"
+    #: Offered load exceeded service capacity. The server kept up until some
+    #: rate and then stopped: achieved throughput plateaus while the queue grows
+    #: without bound, so measured latency is a function of how long the run
+    #: lasted rather than a steady-state property. Not reportable as "the p95 at
+    #: this rate", but it is how the saturation point is located.
+    OVERSUBSCRIBED = "oversubscribed"
     CLIENT_SATURATED = "client-saturated"
     ENGINE_ERROR = "engine-error"
     THERMAL_THROTTLED = "thermal-throttled"

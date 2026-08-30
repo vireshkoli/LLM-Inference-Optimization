@@ -322,12 +322,16 @@ class SweepRunner:
         failed = len(measured) - len(ok)
 
         window = loadgen.measurement_window_s or 1e-9
+        ttft_stats = summarize([r.ttft_s for r in ok if r.ttft_s is not None])
         assessment = assess_validity(
             dispatch_lags_s=[r.dispatch_lag_s for r in measured],
             requests_scheduled=len(measured),
             requests_completed=len(ok),
             requests_failed=failed,
             mean_interarrival_s=point.mean_interarrival_s,
+            offered_rate_rps=point.rate_rps,
+            achieved_rate_rps=len(ok) / window,
+            observed_latency_s=ttft_stats.p95,
             throttled_fraction=telemetry.throttled_fraction,
         )
 
@@ -376,7 +380,7 @@ class SweepRunner:
             requests_sent=len(measured),
             requests_completed=len(ok),
             requests_failed=failed,
-            ttft_s=summarize([r.ttft_s for r in ok if r.ttft_s is not None]),
+            ttft_s=ttft_stats,
             tpot_s=summarize([r.tpot_s for r in ok if r.tpot_s is not None]),
             e2e_latency_s=summarize([r.e2e_s for r in ok if r.e2e_s is not None]),
             output_tokens=summarize([float(r.output_tokens) for r in ok]),
