@@ -45,9 +45,10 @@ earlier requests have returned*.
 **Why not closed-loop.** A fixed-concurrency generator only issues a new request when a prior
 one completes. When the server slows, the generator slows with it, so the slow period is
 under-sampled — **coordinated omission**. The measured tail is then systematically optimistic,
-and the tail is precisely the number anyone cares about. A closed-loop run is included in the
-sweep (`vllm-bf16-closed-loop`) purely as an exhibit demonstrating the size of this error on
-this hardware; it is never reported as a headline result.
+and the tail is precisely the number anyone cares about. A closed-loop run is *defined* in the
+sweep (`vllm-bf16-closed-loop`) as an exhibit that would demonstrate the size of this error on
+this hardware; **it has not been run yet**, and when it is it is never reported as a headline
+result. The open-loop argument above stands on its own; the exhibit would quantify it.
 
 **Schedule determinism.** The full arrival schedule and prompt list are generated from a fixed
 seed *before* the run begins. Every configuration therefore faces a byte-identical offered load,
@@ -81,9 +82,11 @@ and length distribution changes batching behaviour completely.
 - **Primary:** input/output lengths sampled from **ShareGPT** conversations — real
   human/assistant turns, and the same source vLLM's own `benchmark_serving.py` uses, so numbers
   remain comparable to published work.
-- **Secondary:** an **Azure LLM Inference Trace** replay, which supplies real production
-  *arrival timestamps* rather than assumed Poisson. Poisson is itself a modelling assumption;
-  this run quantifies what that assumption costs at the tail.
+- **Secondary, defined but not yet run:** an **Azure LLM Inference Trace** replay, supplying
+  real production *arrival timestamps* rather than assumed Poisson. Poisson is itself a
+  modelling assumption, and this run would quantify what that assumption costs at the tail.
+  Every result currently published therefore rests on Poisson arrivals, and that is a stated
+  assumption rather than a validated one.
 
 **Output length is enforced**, via `max_tokens` set to the sampled length together with
 `ignore_eos=True`. Without this, different quantization levels stop at different points and the
@@ -403,9 +406,33 @@ _(pending: agreement figures)_
 
 ## 10. What more hardware would buy
 
-_(pending — written against measured results in Phase 8)_
+Now answerable against measured results rather than guessed at, because the sweep found a
+specific mechanism worth testing elsewhere.
 
-Candidates: an Ada or Hopper card to make the FP8 axis real rather than excluded; NVLink to make
-tensor-parallel scaling measurable without the interconnect dominating; a second GPU generation
-to test whether the bandwidth-bound quantization advantage predicted for the A40 actually
-narrows on higher-bandwidth parts.
+**An Ada or Hopper card, to make the FP8 axis real.** This is the strongest candidate, and the
+results say why. The headline finding is that the winning format changes with load: W4A16 buys
+bandwidth only, so it wins bandwidth-bound decode and collapses on compute-bound prefill, while
+W8A8 accelerates prefill arithmetic on real INT8 tensor cores and therefore sustains the highest
+rate. On sm_89/sm_90 the W8A8 role would be filled by FP8 — same structural argument, different
+numeric format, and quality damage that is typically smaller than INT8's. Whether the crossover
+sits at the same place, or moves, is the obvious next experiment. It cannot be run here: the
+A40 is sm_86, and vLLM will silently dequantize an FP8 checkpoint to FP16 rather than refuse,
+which is why FP8 is excluded here rather than measured badly.
+
+**A higher-bandwidth part of the same generation, to test the mechanism directly.** The bytes-read
+model predicted INT8 decode within 1.6 % on this card. If the model is right rather than merely
+fitted, the *same* prediction should hold on an A100 or H100 while the absolute advantage of
+weight-only quantization narrows, because those parts are less bandwidth-starved relative to
+their compute. That is a falsifiable prediction this repository cannot test with one GPU model,
+and it is the single measurement that would most strengthen or break the central claim.
+
+**NVLink, to make tensor parallelism measurable.** The two A40s here are joined by a PCIe host
+bridge with no NVLink, so a TP=2 run would measure the interconnect rather than the model. On an
+8B model that is expected to be a net loss and was cut for exactly that reason; on a 70B, where
+TP is not optional, the interconnect becomes the thing worth measuring rather than the thing
+contaminating the measurement.
+
+**A machine that is not shared.** Two of the incidents recorded in §5a — the deleted checkpoints
+and the busy-neighbour stamp on 66 of 168 runs — are artifacts of a multi-tenant box rather than
+of the method. Neither invalidated a result, because both were detected and bounded, but both
+cost time that dedicated hardware would not have.
