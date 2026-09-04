@@ -33,7 +33,13 @@ from matplotlib.axes import Axes
 from llmbench.metrics.percentiles import summarize
 from llmbench.schema import RunResult
 
-__all__ = ["SERIES_COLORS", "plot_latency_throughput", "plot_tpot_throughput"]
+__all__ = [
+    "SERIES_COLORS",
+    "ParetoMarker",
+    "plot_latency_throughput",
+    "plot_pareto",
+    "plot_tpot_throughput",
+]
 
 #: Validated categorical palette, fixed order (see the data-viz reference
 #: palette). Assigned by configuration identity and never cycled, so adding or
@@ -277,3 +283,120 @@ def plot_tpot_throughput(
         subtitle="Excludes prefill · mean ± std across repeats",
         log_y=False,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ParetoMarker:
+    """One configuration placed on the quality/cost plane under an SLA."""
+
+    config_id: str
+    cost_per_1m_usd: float
+    quality: float
+    #: Half-width of the 95% interval on the quality score, when the harness
+    #: reported a standard error. Drawn, because the central finding here is
+    #: that the configurations are not separated by it.
+    quality_ci: float
+    throughput_tokens_s: float
+    on_frontier: bool
+
+
+def plot_pareto(
+    markers: Sequence[ParetoMarker],
+    out_path: Path,
+    *,
+    sla_label: str,
+    quality_label: str,
+    reference_config: str | None = None,
+) -> Path:
+    """Quality against cost, with dominated configurations left visible.
+
+    The third axis — latency — is held fixed by the SLA rather than drawn: each
+    configuration sits at the highest offered rate whose measured p95 still met
+    the budget, so every point on the chart is one a platform team could
+    actually run. Sweeping the budget moves the points, which is why the SLA is
+    named in the subtitle rather than assumed.
+
+    Dominated configurations are drawn hollow and kept in place. Deleting them
+    would turn a demonstration into an assertion: the frontier is only
+    persuasive next to the points it beat.
+
+    Args:
+        reference_config: Draws that configuration's 95% quality interval as a
+            band across the plot. When every marker falls inside it, the chart
+            says so in ink: the quality axis is not resolved at this sample
+            size, and the frontier is being decided by cost alone. A Pareto
+            chart that omits this reads as a quality ranking it cannot support.
+    """
+    fig, ax = plt.subplots(figsize=(9.0, 5.4), dpi=160, facecolor=_SURFACE)
+
+    reference = next((m for m in markers if m.config_id == reference_config), None)
+    if reference is not None and reference.quality_ci:
+        ax.axhspan(
+            reference.quality - reference.quality_ci,
+            reference.quality + reference.quality_ci,
+            color=_GRID,
+            alpha=0.65,
+            zorder=1,
+            label=f"{reference.config_id} 95% CI",
+        )
+
+    order = {m.config_id: i for i, m in enumerate(sorted(markers, key=lambda m: m.config_id))}
+    frontier = sorted([m for m in markers if m.on_frontier], key=lambda m: m.cost_per_1m_usd)
+
+    if len(frontier) >= 2:
+        ax.plot(
+            [m.cost_per_1m_usd for m in frontier],
+            [m.quality for m in frontier],
+            color=_TEXT_SECONDARY,
+            linewidth=1.4,
+            linestyle="--",
+            zorder=2,
+            label="Pareto frontier",
+        )
+
+    for m in markers:
+        colour = SERIES_COLORS[order[m.config_id] % len(SERIES_COLORS)]
+        ax.errorbar(
+            [m.cost_per_1m_usd],
+            [m.quality],
+            yerr=[m.quality_ci] if m.quality_ci else None,
+            color=colour,
+            marker="o",
+            markersize=11 if m.on_frontier else 9,
+            markerfacecolor=colour if m.on_frontier else _SURFACE,
+            markeredgecolor=colour,
+            markeredgewidth=2.0,
+            capsize=3,
+            elinewidth=1.2,
+            linestyle="none",
+            zorder=4 if m.on_frontier else 3,
+        )
+        ax.annotate(
+            f"{m.config_id}\n{m.throughput_tokens_s:.0f} tok/s"
+            + ("" if m.on_frontier else "  · dominated"),
+            xy=(m.cost_per_1m_usd, m.quality),
+            xytext=(10, -4),
+            textcoords="offset points",
+            color=_TEXT_PRIMARY if m.on_frontier else _TEXT_SECONDARY,
+            fontsize=8.5,
+            va="top",
+        )
+
+    ax.margins(x=0.30, y=0.22)
+    _style_axes(
+        ax,
+        xlabel="Cost per 1M output tokens (USD)",
+        ylabel=quality_label,
+        title="Quality vs cost at a fixed latency budget",
+        subtitle=(
+            f"Each point is the highest offered rate meeting {sla_label} · "
+            f"hollow = dominated · error bars are 95% CI on quality"
+        ),
+    )
+    if len(markers) >= 2:
+        ax.legend(frameon=False, fontsize=9, labelcolor=_TEXT_SECONDARY, loc="lower left")
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, facecolor=_SURFACE, bbox_inches="tight")
+    plt.close(fig)
+    return out_path

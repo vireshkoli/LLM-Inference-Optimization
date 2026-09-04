@@ -7,6 +7,8 @@ confident, wrong recommendation that looks exactly like a result.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from llmbench.analysis.cost import (
@@ -15,6 +17,7 @@ from llmbench.analysis.cost import (
     cost_per_million_tokens,
 )
 from llmbench.analysis.pareto import ParetoPoint, dominates, pareto_frontier
+from llmbench.report.render import MissingBlockError, pareto_markers, render_into
 
 
 def point(cfg: str, q: float, lat: float, cost: float) -> ParetoPoint:
@@ -157,3 +160,63 @@ class TestFrontier:
 
     def test_empty_input(self) -> None:
         assert pareto_frontier([]) == ([], [])
+
+
+class TestReportBlocks:
+    """`make report` must be idempotent, or "no number here was typed by hand"
+    is a claim rather than a checkable property."""
+
+    @staticmethod
+    def _doc(tmp_path: Path, body: str) -> Path:
+        p = tmp_path / "DOC.md"
+        p.write_text(body)
+        return p
+
+    def test_fills_an_empty_placeholder(self, tmp_path: Path) -> None:
+        doc = self._doc(tmp_path, "intro\n\n<!-- BEGIN:tbl -->\n<!-- END:tbl -->\n\nouttro\n")
+        render_into(doc, {"tbl": "| a |\n|---|"})
+        assert "| a |" in doc.read_text()
+        assert doc.read_text().startswith("intro")
+        assert doc.read_text().endswith("outtro\n")
+
+    def test_second_render_is_byte_identical(self, tmp_path: Path) -> None:
+        doc = self._doc(tmp_path, "<!-- BEGIN:tbl -->\n<!-- END:tbl -->\n")
+        render_into(doc, {"tbl": "x"})
+        once = doc.read_text()
+        render_into(doc, {"tbl": "x"})
+        assert doc.read_text() == once
+
+    def test_replaces_stale_content_rather_than_appending(self, tmp_path: Path) -> None:
+        doc = self._doc(tmp_path, "<!-- BEGIN:tbl -->\nOLD NUMBER\n<!-- END:tbl -->\n")
+        render_into(doc, {"tbl": "NEW NUMBER"})
+        assert "OLD NUMBER" not in doc.read_text()
+        assert "NEW NUMBER" in doc.read_text()
+
+    def test_prose_outside_markers_is_untouched(self, tmp_path: Path) -> None:
+        doc = self._doc(tmp_path, "hand written\n<!-- BEGIN:tbl -->\n<!-- END:tbl -->\nalso hand\n")
+        render_into(doc, {"tbl": "gen"})
+        text = doc.read_text()
+        assert "hand written" in text
+        assert "also hand" in text
+
+    def test_missing_marker_raises_rather_than_silently_dropping(self, tmp_path: Path) -> None:
+        """A dropped block would leave a stale hand-written table looking generated."""
+        doc = self._doc(tmp_path, "no markers here\n")
+        with pytest.raises(MissingBlockError, match="tbl"):
+            render_into(doc, {"tbl": "x"})
+
+    def test_unrelated_blocks_are_left_alone(self, tmp_path: Path) -> None:
+        doc = self._doc(
+            tmp_path,
+            "<!-- BEGIN:a -->\nkeep\n<!-- END:a -->\n<!-- BEGIN:b -->\n<!-- END:b -->\n",
+        )
+        render_into(doc, {"b": "new"})
+        assert "keep" in doc.read_text()
+
+
+class TestParetoMarkers:
+    def test_configs_without_quality_are_omitted_not_guessed(self) -> None:
+        """A guessed quality score would decide the frontier — the one value a
+        chart like this must never invent."""
+        markers = pareto_markers([], [], gpu_hourly_usd=0.4, max_ttft_p95_s=0.5)
+        assert markers == []

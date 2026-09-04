@@ -9,13 +9,27 @@ that silently interpolates is worse than one with a gap.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from llmbench.analysis.cost import operating_points
+from llmbench.analysis.cost import best_under_sla, operating_points
+from llmbench.analysis.pareto import ParetoPoint, pareto_frontier
+from llmbench.analysis.plots import ParetoMarker
 from llmbench.schema import QualityResult, RunResult, RunValidity
 
-__all__ = ["latency_table", "load_quality", "load_runs", "quality_table", "validity_summary"]
+__all__ = [
+    "MissingBlockError",
+    "latency_table",
+    "load_quality",
+    "load_runs",
+    "pareto_markers",
+    "quality_scores",
+    "quality_table",
+    "render_into",
+    "sla_table",
+    "validity_summary",
+]
 
 
 def load_runs(results_dir: Path) -> list[RunResult]:
@@ -142,3 +156,155 @@ def cost_note(gpu_hourly_usd: float, vendor: str, url: str, accessed: str) -> st
         f"Because every configuration runs on the same GPU, the hourly rate is a linear scalar "
         f"and the *ranking* is invariant to it — there is no crossover price."
     )
+
+
+#: Quality axis for the headline chart. GSM8K strict-match is generative and
+#: genuinely sensitive to quantization damage, unlike a multiple-choice task.
+_HEADLINE_TASK = "gsm8k"
+_HEADLINE_METRIC = "exact_match,strict-match"
+
+
+def quality_scores(
+    quality: Sequence[QualityResult],
+    task: str = _HEADLINE_TASK,
+    metric: str = _HEADLINE_METRIC,
+) -> dict[str, tuple[float, float]]:
+    """Map config id to ``(value, stderr)`` for one task metric.
+
+    A missing stderr becomes 0.0 rather than being dropped: perplexity has no
+    sampling error to report, and a configuration without an interval should
+    still appear on the chart with no error bar.
+    """
+    out: dict[str, tuple[float, float]] = {}
+    for q in quality:
+        for s in q.scores:
+            if s.task.value == task and s.metric == metric:
+                out[q.config_id] = (s.value, s.stderr or 0.0)
+    return out
+
+
+def pareto_markers(
+    runs: Sequence[RunResult],
+    quality: Sequence[QualityResult],
+    *,
+    gpu_hourly_usd: float,
+    max_ttft_p95_s: float,
+) -> list[ParetoMarker]:
+    """Place each configuration on the quality/cost plane under one SLA.
+
+    Configurations without a quality measurement are omitted rather than given
+    a placeholder score. A guessed quality value would decide the frontier,
+    which is the one thing a chart like this must never invent.
+    """
+    scores = quality_scores(quality)
+    best = best_under_sla(operating_points(runs, gpu_hourly_usd), max_ttft_p95_s=max_ttft_p95_s)
+
+    points = [
+        ParetoPoint(
+            config_id=cid,
+            quality=scores[cid][0],
+            latency_s=op.ttft_p95_s,
+            cost_per_1m_usd=op.cost_per_1m_usd,
+            throughput_tokens_s=op.throughput_tokens_s,
+        )
+        for cid, op in sorted(best.items())
+        if cid in scores
+    ]
+    frontier, _ = pareto_frontier(points)
+    on_frontier = {p.config_id for p in frontier}
+
+    return [
+        ParetoMarker(
+            config_id=p.config_id,
+            cost_per_1m_usd=p.cost_per_1m_usd,
+            quality=p.quality,
+            quality_ci=1.96 * scores[p.config_id][1],
+            throughput_tokens_s=p.throughput_tokens_s,
+            on_frontier=p.config_id in on_frontier,
+        )
+        for p in points
+    ]
+
+
+def sla_table(
+    runs: Sequence[RunResult],
+    *,
+    gpu_hourly_usd: float,
+    ttft_budgets_ms: Sequence[float],
+) -> str:
+    """Cost-optimal configuration as a function of the p95 TTFT budget.
+
+    This is the sensitivity analysis that has a real answer. Because every
+    configuration runs on the same GPU, the hourly price is a linear scalar and
+    cannot reorder anything — but the latency budget decides which offered rates
+    are admissible, which caps sustainable throughput, which sets cost per
+    token. Configurations therefore *can* swap places as the budget tightens.
+    """
+    points = operating_points(runs, gpu_hourly_usd)
+    lines = [
+        "| p95 TTFT budget | Cheapest config | Rate | Throughput | $/1M tokens | Admissible |",
+        "|---|---|---|---|---|---|",
+    ]
+    for budget_ms in ttft_budgets_ms:
+        best = best_under_sla(points, max_ttft_p95_s=budget_ms / 1e3)
+        if not best:
+            lines.append(f"| {budget_ms:.0f} ms | — | — | — | — | 0 |")
+            continue
+        winner = min(best.values(), key=lambda p: p.cost_per_1m_usd)
+        lines.append(
+            f"| {budget_ms:.0f} ms | `{winner.config_id}` | {winner.rate_rps:g} rps "
+            f"| {winner.throughput_tokens_s:.0f} tok/s | ${winner.cost_per_1m_usd:.4f} "
+            f"| {len(best)} of {len(points)} |"
+        )
+    return "\n".join(lines)
+
+
+_BLOCK = re.compile(
+    r"<!--\s*BEGIN:(?P<key>[a-z0-9-]+)\s*-->.*?<!--\s*END:(?P=key)\s*-->",
+    re.DOTALL,
+)
+
+
+class MissingBlockError(RuntimeError):
+    """A generated block was produced but the document has nowhere to put it."""
+
+
+def render_into(path: Path, blocks: Mapping[str, str]) -> set[str]:
+    """Replace marked regions of a Markdown document in place.
+
+    Prose stays hand-written; every number lives inside a
+    ``<!-- BEGIN:key -->`` / ``<!-- END:key -->`` pair and is replaced wholesale
+    from the result JSON. That split is what lets ``make report`` be idempotent:
+    rebuilding on unchanged results must leave ``git diff`` empty, which is the
+    only real proof that no figure in the documents was typed by hand.
+
+    Returns:
+        The keys actually substituted.
+
+    Raises:
+        MissingBlockError: If a supplied block has no marker in the document.
+            Silently dropping it would let a stale hand-written table survive a
+            rebuild and look generated.
+    """
+    text = path.read_text()
+    seen: set[str] = set()
+
+    def substitute(match: re.Match[str]) -> str:
+        key = match.group("key")
+        if key not in blocks:
+            return match.group(0)
+        seen.add(key)
+        # Emitted in a normal form rather than preserving whatever whitespace
+        # the document had, so a second run produces a byte-identical file. An
+        # empty placeholder block and a filled one round-trip the same way.
+        return f"<!-- BEGIN:{key} -->\n{blocks[key]}\n<!-- END:{key} -->"
+
+    updated = _BLOCK.sub(substitute, text)
+    missing = set(blocks) - seen
+    if missing:
+        msg = f"{path}: no <!-- BEGIN:... --> marker for {sorted(missing)}"
+        raise MissingBlockError(msg)
+
+    if updated != text:
+        path.write_text(updated)
+    return seen

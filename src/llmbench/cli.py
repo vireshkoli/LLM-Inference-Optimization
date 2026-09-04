@@ -3,6 +3,7 @@
 ``llmbench sweep``  — run a matrix, writing one validated JSON per measurement
 ``llmbench charts`` — regenerate figures from committed results
 ``llmbench show``   — summarise results already on disk
+``llmbench report`` — regenerate every chart and table in README/REPORT
 
 Everything is driven from YAML. Adding a configuration is a config edit, never a
 code edit, and every number that reaches the README is regenerated from the JSON
@@ -16,11 +17,23 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
 
-from llmbench.analysis.plots import plot_latency_throughput, plot_tpot_throughput
+from llmbench.analysis.plots import plot_latency_throughput, plot_pareto, plot_tpot_throughput
 from llmbench.config import load_sweep_config
+from llmbench.report.render import (
+    cost_note,
+    latency_table,
+    load_quality,
+    pareto_markers,
+    quality_table,
+    render_into,
+    sla_table,
+    validity_summary,
+    write_summary_json,
+)
 from llmbench.runner import SweepRunner
 from llmbench.schema import RunResult
 
@@ -237,3 +250,75 @@ def dump_schema(
 
 if __name__ == "__main__":  # pragma: no cover
     app()
+
+
+@app.command()
+def report(
+    results: Annotated[Path, typer.Option(help="Directory of result JSON")] = Path("results/runs"),
+    quality_dir: Annotated[Path, typer.Option(help="Directory of quality JSON")] = Path(
+        "results/quality"
+    ),
+    cost_config: Annotated[Path, typer.Option(help="Cost assumptions")] = Path("configs/cost.yaml"),
+    out: Annotated[Path, typer.Option(help="Repository root to write into")] = Path("."),
+    sla_ttft_ms: Annotated[
+        float, typer.Option(help="p95 TTFT budget for the headline chart")
+    ] = 500.0,
+) -> None:
+    """Regenerate every chart and table in README/REPORT from results JSON.
+
+    Idempotent by construction: running it twice on unchanged results leaves
+    ``git diff`` empty. That property is the point — it is what makes "no number
+    in these documents was typed by hand" checkable rather than merely claimed.
+    """
+    runs = _load_runs(results)
+    if not runs:
+        console.print(f"[yellow]no results found in {results}[/yellow]")
+        raise typer.Exit(code=1)
+
+    quality = load_quality(quality_dir) if quality_dir.exists() else []
+    cost = yaml.safe_load(cost_config.read_text())
+    ref = cost["reference"]
+    price = float(ref["gpu_hourly_usd"])
+    budgets = [float(x) for x in cost["sla_targets"]["p95_ttft_ms"]]
+
+    figures = out / "results" / "figures"
+    paths = [
+        plot_latency_throughput(runs, figures / "latency_vs_throughput.png"),
+        plot_tpot_throughput(runs, figures / "tpot_vs_throughput.png"),
+    ]
+
+    markers = pareto_markers(runs, quality, gpu_hourly_usd=price, max_ttft_p95_s=sla_ttft_ms / 1e3)
+    if markers:
+        paths.append(
+            plot_pareto(
+                markers,
+                figures / "pareto_quality_cost.png",
+                sla_label=f"p95 TTFT ≤ {sla_ttft_ms:.0f} ms",
+                quality_label="GSM8K exact match (8-shot, strict)",
+                reference_config="vllm-bf16",
+            )
+        )
+
+    blocks = {
+        "sla-table": sla_table(runs, gpu_hourly_usd=price, ttft_budgets_ms=budgets),
+        "latency-table": latency_table(runs, price),
+        "validity": validity_summary(runs),
+        "cost-note": cost_note(
+            price, ref["source_vendor"], ref["source_url"], ref["accessed_date"]
+        ),
+    }
+    if quality:
+        blocks["quality-table"] = quality_table(quality)
+
+    for doc in ("README.md", "REPORT.md"):
+        path = out / doc
+        if not path.exists():
+            continue
+        present = {k: v for k, v in blocks.items() if f"BEGIN:{k}" in path.read_text()}
+        if present:
+            render_into(path, present)
+            console.print(f"  updated {doc}: {', '.join(sorted(present))}")
+
+    written = write_summary_json(runs, out / "docs" / "results.json", price)
+    for path in [*paths, written]:
+        console.print(f"  wrote {path}")
