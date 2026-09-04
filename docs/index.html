@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Inference Optimization — results explorer</title>
+<meta name="description" content="Open-loop benchmark results for quantized Llama-3.1-8B serving on an NVIDIA A40.">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.2/plotly.min.js"></script>
+<style>
+  :root {
+    --bg: #fcfcfb; --surface: #ffffff; --text: #0b0b0b; --muted: #52514e;
+    --grid: #e3e2df; --accent: #2a78d6; --good: #1baf7a; --bad: #e34948;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14140f; --surface: #1c1c18; --text: #f5f4ef; --muted: #a8a69e;
+      --grid: #33322c; --accent: #6aa9ee; --good: #4fd0a0; --bad: #f08886;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 22px 72px; }
+  h1 { font-size: 28px; line-height: 1.25; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 18px; margin: 40px 0 10px; letter-spacing: -0.005em; }
+  .lede { color: var(--muted); margin: 0 0 6px; max-width: 68ch; }
+  .links { margin: 18px 0 0; font-size: 14px; }
+  .links a { color: var(--accent); text-decoration: none; margin-right: 18px; }
+  .links a:hover { text-decoration: underline; }
+  .panel { background: var(--surface); border: 1px solid var(--grid);
+           border-radius: 10px; padding: 20px; margin-top: 18px; }
+  .sla-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .sla-row label { font-weight: 600; white-space: nowrap; }
+  input[type=range] { flex: 1 1 260px; min-width: 200px; accent-color: var(--accent); }
+  .budget { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 5.5em; }
+  .verdict { margin-top: 16px; font-size: 15px; line-height: 1.7; }
+  .verdict strong { font-size: 17px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em;
+         background: var(--bg); border: 1px solid var(--grid); border-radius: 4px; padding: 1px 5px; }
+  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; min-width: 640px; }
+  th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--grid);
+           font-variant-numeric: tabular-nums; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; font-variant-numeric: normal; }
+  th { color: var(--muted); font-weight: 600; font-size: 12.5px; text-transform: uppercase;
+       letter-spacing: 0.04em; }
+  tr.out td { opacity: 0.32; }
+  tr.best td { background: color-mix(in srgb, var(--good) 12%, transparent); font-weight: 600; }
+  .tag { display: inline-block; font-size: 11.5px; padding: 1px 7px; border-radius: 999px;
+         border: 1px solid currentColor; }
+  .tag.in { color: var(--good); } .tag.out { color: var(--muted); }
+  .note { color: var(--muted); font-size: 13.5px; margin-top: 12px; max-width: 74ch; }
+  #chart { width: 100%; height: 460px; }
+  footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--grid);
+           color: var(--muted); font-size: 13.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Quantized LLM serving on an NVIDIA A40</h1>
+  <p class="lede">
+    168 open-loop measurements &middot; 6 configurations &middot; Llama-3.1-8B-Instruct &middot;
+    Poisson arrivals, 3 repeats per point, clocks locked, kernels asserted from engine logs.
+  </p>
+  <p class="lede">
+    Every point below is a rate a server could actually be provisioned for. Oversubscribed
+    runs &mdash; where offered load exceeded capacity and latency reflects run duration rather
+    than load &mdash; are excluded here and published in the repository.
+  </p>
+  <p class="links">
+    <a href="https://github.com/vireshkoli/LLM-Inference-Optimization">Repository</a>
+    <a href="https://github.com/vireshkoli/LLM-Inference-Optimization/blob/main/REPORT.md">Findings</a>
+    <a href="https://github.com/vireshkoli/LLM-Inference-Optimization/blob/main/METHODOLOGY.md">Methodology</a>
+  </p>
+
+  <h2>Pick a latency budget</h2>
+  <div class="panel">
+    <div class="sla-row">
+      <label for="sla">p95 TTFT budget</label>
+      <input type="range" id="sla" min="100" max="3000" step="25" value="500">
+      <span class="budget" id="slaVal">500 ms</span>
+    </div>
+    <div class="verdict" id="verdict"></div>
+    <p class="note">
+      Because every configuration ran on the same GPU, the hourly price is a linear scalar and
+      cannot reorder this ranking. The latency budget can, and does &mdash; it decides which
+      offered rates are admissible, which caps sustainable throughput, which sets cost per token.
+    </p>
+  </div>
+
+  <h2>Latency vs throughput</h2>
+  <div class="panel">
+    <div id="chart"></div>
+    <p class="note">
+      Click a legend entry to hide a configuration. The dashed line is the current budget;
+      points above it do not meet the SLA. Log scale on the y axis, because tail latency spans
+      orders of magnitude between the linear region and saturation.
+    </p>
+  </div>
+
+  <h2>Operating points</h2>
+  <div class="panel">
+    <div class="scroll"><table id="tbl">
+      <thead><tr>
+        <th>Config</th><th>Rate</th><th>Throughput</th><th>TTFT p95</th>
+        <th>TPOT p95</th><th>$/1M tokens</th><th>Repeats</th><th>SLA</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <p class="note">
+      Throughput is mean across repeats. Cost assumes $0.40/GPU-hour (RunPod A40 community
+      cloud, accessed 2026-08-10) &mdash; an assumption, stated as one, because the measurement
+      GPU is a lab machine with no invoice.
+    </p>
+  </div>
+
+  <footer>
+    Generated from <code>results/runs/*.json</code> by <code>make report</code>. Nothing on this
+    page is hand-typed. Full methodology, known confounds and limitations are in the repository.
+  </footer>
+</div>
+
+<script>
+// Fixed palette assigned by configuration identity, never by rank, so hiding a
+// series never repaints the survivors.
+const COLORS = ["#2a78d6","#eb6834","#1baf7a","#eda100","#e87ba4","#008300","#4a3aa7","#e34948"];
+const dark = () => window.matchMedia("(prefers-color-scheme: dark)").matches;
+
+let ROWS = [], CONFIGS = [], COLOR = {};
+
+const fmtUsd = v => "$" + v.toFixed(4);
+const fmtMs  = v => v >= 1000 ? (v/1000).toFixed(2) + " s" : v.toFixed(0) + " ms";
+
+function admissible(budget) {
+  // Best point per config under the budget: highest throughput that still
+  // meets it. Throughput is maximised rather than latency minimised because
+  // for a fixed SLA the cheapest config is the one serving the most tokens
+  // per GPU-hour while still inside it.
+  const best = {};
+  for (const r of ROWS) {
+    if (r.ttft_p95_ms > budget) continue;
+    if (!best[r.config_id] || r.throughput_tokens_s > best[r.config_id].throughput_tokens_s) {
+      best[r.config_id] = r;
+    }
+  }
+  return best;
+}
+
+function renderVerdict(budget) {
+  const best = admissible(budget);
+  const picks = Object.values(best);
+  const el = document.getElementById("verdict");
+  if (!picks.length) {
+    el.innerHTML = "<strong>No configuration meets this budget.</strong> " +
+      "The tightest measured p95 TTFT is " +
+      fmtMs(Math.min(...ROWS.map(r => r.ttft_p95_ms))) + ".";
+    return;
+  }
+  picks.sort((a, b) => a.cost_per_1m_usd - b.cost_per_1m_usd);
+  const w = picks[0];
+  const bf = best["vllm-bf16"];
+  let vs = "";
+  if (bf && bf.config_id !== w.config_id) {
+    const saving = (1 - w.cost_per_1m_usd / bf.cost_per_1m_usd) * 100;
+    vs = ` &mdash; ${saving.toFixed(0)}% cheaper than BF16, which serves ` +
+         `${bf.throughput_tokens_s.toFixed(0)} tok/s at ${fmtUsd(bf.cost_per_1m_usd)}.`;
+  }
+  el.innerHTML =
+    `Cheapest configuration meeting <strong>${budget} ms</strong>: ` +
+    `<strong><code>${w.config_id}</code></strong> at ${w.rate_rps} req/s, ` +
+    `serving <strong>${w.throughput_tokens_s.toFixed(0)} tok/s</strong> for ` +
+    `<strong>${fmtUsd(w.cost_per_1m_usd)}</strong> per million output tokens${vs}` +
+    `<br><span style="color:var(--muted)">${picks.length} of ${CONFIGS.length} ` +
+    `configurations admissible at this budget.</span>`;
+}
+
+function renderTable(budget) {
+  const best = admissible(budget);
+  const cheapest = Object.values(best).sort((a,b) => a.cost_per_1m_usd - b.cost_per_1m_usd)[0];
+  const body = document.getElementById("tbl").querySelector("tbody");
+  body.innerHTML = ROWS.map(r => {
+    const ok = r.ttft_p95_ms <= budget;
+    const isBest = cheapest && r.config_id === cheapest.config_id && r.rate_rps === cheapest.rate_rps;
+    return `<tr class="${isBest ? "best" : (ok ? "" : "out")}">
+      <td><code>${r.config_id}</code></td>
+      <td>${r.rate_rps} rps</td>
+      <td>${r.throughput_tokens_s.toFixed(0)} ± ${r.throughput_std.toFixed(0)}</td>
+      <td>${fmtMs(r.ttft_p95_ms)}</td>
+      <td>${r.tpot_p95_ms.toFixed(1)} ms</td>
+      <td>${fmtUsd(r.cost_per_1m_usd)}</td>
+      <td>${r.repeats}</td>
+      <td><span class="tag ${ok ? "in" : "out"}">${ok ? "meets" : "over"}</span></td>
+    </tr>`;
+  }).join("");
+}
+
+function renderChart(budget) {
+  const muted = dark() ? "#a8a69e" : "#52514e";
+  const grid  = dark() ? "#33322c" : "#e3e2df";
+  const traces = CONFIGS.map(cfg => {
+    const pts = ROWS.filter(r => r.config_id === cfg)
+                    .sort((a,b) => a.throughput_tokens_s - b.throughput_tokens_s);
+    return {
+      x: pts.map(p => p.throughput_tokens_s),
+      y: pts.map(p => p.ttft_p95_ms),
+      name: cfg,
+      type: "scatter",
+      mode: "lines+markers",
+      line: { color: COLOR[cfg], width: 2 },
+      marker: { size: 7, color: COLOR[cfg] },
+      hovertemplate:
+        "<b>%{fullData.name}</b><br>%{x:.0f} tok/s<br>TTFT p95 %{y:.0f} ms" +
+        "<extra></extra>"
+    };
+  });
+  const layout = {
+    margin: { l: 62, r: 18, t: 10, b: 52 },
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: "rgba(0,0,0,0)",
+    font: { color: muted, size: 12 },
+    xaxis: { title: "Output token throughput (tokens/sec)", gridcolor: grid, zeroline: false },
+    yaxis: { title: "p95 time to first token (ms)", type: "log", gridcolor: grid, zeroline: false },
+    legend: { orientation: "h", y: -0.22, font: { size: 11.5 } },
+    shapes: [{
+      type: "line", xref: "paper", x0: 0, x1: 1, y0: budget, y1: budget,
+      line: { color: muted, width: 1.4, dash: "dash" }
+    }],
+    annotations: [{
+      xref: "paper", x: 1, y: Math.log10(budget), xanchor: "right", yanchor: "bottom",
+      text: `SLA ${budget} ms`, showarrow: false, font: { size: 11, color: muted }
+    }]
+  };
+  Plotly.react("chart", traces, layout, { displayModeBar: false, responsive: true });
+}
+
+function refresh() {
+  const budget = Number(document.getElementById("sla").value);
+  document.getElementById("slaVal").textContent = budget + " ms";
+  renderVerdict(budget);
+  renderTable(budget);
+  renderChart(budget);
+}
+
+fetch("results.json")
+  .then(r => r.json())
+  .then(data => {
+    ROWS = data;
+    CONFIGS = [...new Set(data.map(r => r.config_id))].sort();
+    CONFIGS.forEach((c, i) => { COLOR[c] = COLORS[i % COLORS.length]; });
+    document.getElementById("sla").addEventListener("input", refresh);
+    window.matchMedia("(prefers-color-scheme: dark)")
+          .addEventListener("change", () => renderChart(Number(document.getElementById("sla").value)));
+    refresh();
+  })
+  .catch(err => {
+    document.getElementById("verdict").textContent =
+      "Could not load results.json: " + err.message;
+  });
+</script>
+</body>
+</html>

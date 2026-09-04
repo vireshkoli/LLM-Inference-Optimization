@@ -11,6 +11,9 @@
 NVIDIA A40. Full findings in **[REPORT.md](REPORT.md)**; how it was measured, and which numbers
 are not trustworthy, in **[METHODOLOGY.md](METHODOLOGY.md)**.
 
+**→ [Interactive results explorer](https://vireshkoli.github.io/LLM-Inference-Optimization/)** —
+set a p95 TTFT budget and see which configuration is cheapest under it.
+
 ---
 
 ## Why this repo exists
