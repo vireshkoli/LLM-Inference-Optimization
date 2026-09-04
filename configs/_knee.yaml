@@ -1,3 +1,6 @@
+# GENERATED: knee-resolution top-up. Adds only the rates missing from the
+# first vLLM pass; every other setting is identical to sweep.yaml so the
+# results are directly comparable.
 # =============================================================================
 # THE sweep matrix. Adding or removing a configuration must never require
 # editing benchmark code — if it does, that is a bug in the harness.
@@ -39,7 +42,7 @@ workload:
   # 16 and 24 were measured, found redundant with 12, and dropped; their
   # records are retained as saturation exhibits. 5, 6 and 7 were added because
   # the knee sits between 4 and 8 and the SLA analysis needs it resolved.
-  request_rates_rps: [1, 2, 4, 5, 6, 7, 8, 12]
+  request_rates_rps: [5, 6, 7]
 
 # -----------------------------------------------------------------------------
 # Quantization levels.
