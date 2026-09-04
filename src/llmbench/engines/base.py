@@ -170,6 +170,7 @@ class EngineProcess(ABC):
         """
         began = time.perf_counter()
         self.stop(spec)  # clear any stale container from an aborted run
+        self._await_vram_release(spec)
 
         container_id = _docker([*self.docker_args(spec), *self.server_args(spec)])
         try:
@@ -213,6 +214,40 @@ class EngineProcess(ABC):
             startup_log=log,
             startup_duration_s=time.perf_counter() - began,
         )
+
+    @staticmethod
+    def _await_vram_release(spec: EngineLaunchSpec, *, wait_s: float = 120.0) -> None:
+        """Wait for the driver to reclaim a previous engine's memory.
+
+        Container removal and VRAM release are not the same event. `docker rm`
+        can report the name free while the driver still holds tens of GB from
+        the process that just exited, so the next engine starts, finds too
+        little memory, and dies — which is how one configuration was lost from
+        a four-configuration pass.
+
+        Polls until free memory covers the requested budget, then returns. On
+        timeout it returns anyway and lets preflight and the engine report the
+        real shortfall, rather than masking it with a second error here.
+        """
+        from llmbench.telemetry.gpu import nvidia_smi_query  # noqa: PLC0415
+
+        deadline = time.monotonic() + wait_s
+        while time.monotonic() < deadline:
+            try:
+                row = nvidia_smi_query(
+                    [
+                        "--query-gpu=memory.total,memory.used",
+                        "--format=csv,noheader,nounits",
+                        "-i",
+                        str(spec.gpu_index),
+                    ]
+                ).splitlines()[0]
+                total, used = (float(x) for x in row.split(","))
+            except (subprocess.SubprocessError, ValueError, IndexError, OSError):
+                return
+            if (total - used) / 1024 >= (total / 1024) * spec.gpu_memory_utilization:
+                return
+            time.sleep(2.0)
 
     @staticmethod
     def _persist_failure_log(spec: EngineLaunchSpec, log: str) -> Path:
