@@ -20,7 +20,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-__all__ = ["PreflightError", "PreflightReport", "check_free_vram", "run_preflight"]
+__all__ = [
+    "PreflightError",
+    "PreflightReport",
+    "check_free_vram",
+    "check_model_cached",
+    "run_preflight",
+]
 
 
 class PreflightError(RuntimeError):
@@ -245,6 +251,36 @@ def check_disk(path: str, *, min_free_gib: float) -> float:
         )
         raise PreflightError(msg)
     return free_gib
+
+
+def check_model_cached(hf_id: str, revision: str, hf_cache_dir: Path) -> Path:
+    """Confirm the checkpoint is on disk at the pinned revision before launching.
+
+    The host HF cache is bind-mounted **read-only** into the engine container,
+    so a missing checkpoint does not fall back to downloading — the engine dies
+    partway through startup with ``OSError: [Errno 30] Read-only file system``
+    buried in a transformers traceback. On a shared machine the cache is not
+    ours alone: three quantized checkpoints were deleted by another user
+    reclaiming disk between two passes of this sweep, and the sweep discovered
+    it one dead container at a time.
+
+    Checking the snapshot directory instead is instant, and names the missing
+    repository and revision rather than the symptom.
+
+    Raises:
+        PreflightError: If the repository or the pinned revision is absent.
+    """
+    repo_dir = hf_cache_dir / "hub" / f"models--{hf_id.replace('/', '--')}"
+    snapshot = repo_dir / "snapshots" / revision
+    if not snapshot.is_dir():
+        what = "revision" if repo_dir.is_dir() else "repository"
+        msg = (
+            f"{hf_id} @ {revision} is not in the HF cache ({what} missing at {snapshot}). "
+            f"The cache is mounted read-only into the engine container, so this cannot "
+            f"self-heal by downloading. Fetch it on the host first."
+        )
+        raise PreflightError(msg)
+    return snapshot
 
 
 def run_preflight(

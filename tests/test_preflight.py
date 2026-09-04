@@ -16,6 +16,7 @@ from llmbench.engines.preflight import (
     PreflightError,
     check_clocks,
     check_disk,
+    check_model_cached,
     clock_lock_held_fraction,
     verify_clock_lock_from_telemetry,
 )
@@ -92,3 +93,32 @@ class TestClockLockVerification:
     def test_tolerance_is_applied(self) -> None:
         assert verify_clock_lock_from_telemetry([1715.0] * 20, 1740) is True
         assert verify_clock_lock_from_telemetry([1690.0] * 20, 1740) is False
+
+
+class TestCheckpointPresence:
+    """The HF cache is mounted read-only, so a missing checkpoint cannot
+    self-heal — it surfaces as an OSError deep in a transformers traceback
+    inside a container that has already been reaped. Catching it here is the
+    difference between a one-line message and a debugging cycle."""
+
+    @staticmethod
+    def _cache(root: Path, repo: str, revision: str) -> Path:
+        snap = root / "hub" / f"models--{repo.replace('/', '--')}" / "snapshots" / revision
+        snap.mkdir(parents=True)
+        return root
+
+    def test_present_checkpoint_returns_its_snapshot(self, tmp_path: Path) -> None:
+        root = self._cache(tmp_path, "org/model", "a" * 40)
+        found = check_model_cached("org/model", "a" * 40, root)
+        assert found.is_dir()
+
+    def test_missing_repository_names_the_repository(self, tmp_path: Path) -> None:
+        with pytest.raises(PreflightError, match="repository missing"):
+            check_model_cached("org/model", "a" * 40, tmp_path)
+
+    def test_wrong_revision_is_not_accepted(self, tmp_path: Path) -> None:
+        """A cached repo at the wrong commit is not the pinned checkpoint;
+        accepting it would silently measure different weights."""
+        root = self._cache(tmp_path, "org/model", "a" * 40)
+        with pytest.raises(PreflightError, match="revision missing"):
+            check_model_cached("org/model", "b" * 40, root)

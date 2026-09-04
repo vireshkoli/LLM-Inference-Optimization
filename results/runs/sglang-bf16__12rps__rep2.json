@@ -1,0 +1,192 @@
+{
+  "schema_version": "1.1.0",
+  "run_id": "da9a3817f7014d9fbeedd54e2e8e1317",
+  "config_id": "sglang-bf16",
+  "repeat_index": 2,
+  "started_at": "2026-09-04T12:02:22.147715Z",
+  "finished_at": "2026-09-04T12:07:26.488222Z",
+  "engine": {
+    "name": "sglang",
+    "version": "unknown",
+    "image": "lmsysorg/sglang:v0.5.17-cu129",
+    "image_digest": "sha256:220bb1a1a4b38e604ebd33c876a279f6d2519035de141200720417407c9b967d",
+    "tensor_parallel_size": 1,
+    "gpu_memory_utilization": 0.9,
+    "max_num_seqs": 256,
+    "selected_kernel": null,
+    "extra_args": {}
+  },
+  "model": {
+    "hf_id": "meta-llama/Llama-3.1-8B-Instruct",
+    "revision": "0e9e39f249a16976918f6564b8830bc894c89659",
+    "quantization": "bf16",
+    "dtype": "bfloat16",
+    "max_model_len": 4096,
+    "weights_gib": 15.0
+  },
+  "workload": {
+    "arrival_process": "poisson",
+    "request_rate_rps": 12.0,
+    "length_source": "sharegpt",
+    "seed": 20260810,
+    "num_requests": 2160,
+    "warmup_requests": 50,
+    "measurement_duration_s": 299.9144349992275,
+    "ignore_eos": true,
+    "input_len_tokens": {
+      "count": 2160,
+      "mean": 166.04907407407407,
+      "std": 418.0563208546787,
+      "min": 3.0,
+      "p50": 26.0,
+      "p90": 407.10000000000014,
+      "p95": 955.0,
+      "p99": 2450.8199999999997,
+      "max": 3470.0
+    },
+    "output_len_tokens": {
+      "count": 2160,
+      "mean": 300.44953703703703,
+      "std": 198.70654253466833,
+      "min": 4.0,
+      "p50": 268.0,
+      "p90": 600.0,
+      "p95": 731.0,
+      "p99": 769.4099999999999,
+      "max": 1395.0
+    }
+  },
+  "hardware": {
+    "gpu": {
+      "index": 1,
+      "name": "NVIDIA A40",
+      "compute_capability": "8.6",
+      "vram_total_mib": 46068,
+      "driver_version": "570.133.07",
+      "cuda_version": "12.8",
+      "ecc_enabled": true
+    },
+    "host": {
+      "hostname": "vireshvm",
+      "cpu_model": "x86_64",
+      "cpu_count": 16,
+      "ram_total_gib": 31.342254638671875,
+      "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.31",
+      "python_version": "3.12.13"
+    },
+    "clocks": {
+      "locked": true,
+      "sm_clock_mhz": 1740,
+      "mem_clock_mhz": null,
+      "persistence_mode": true
+    },
+    "neighbor_gpu_busy": true
+  },
+  "requests_sent": 2160,
+  "requests_completed": 2160,
+  "requests_failed": 0,
+  "ttft_s": {
+    "count": 2160,
+    "mean": 36.29489399187819,
+    "std": 27.78900167966921,
+    "min": 0.0692482516169548,
+    "p50": 35.350490340497345,
+    "p90": 77.21611487902702,
+    "p95": 80.77055895016528,
+    "p99": 83.33689682046884,
+    "max": 84.30034910421818
+  },
+  "tpot_s": {
+    "count": 2160,
+    "mean": 0.10581942455679652,
+    "std": 0.01266035507153363,
+    "min": 0.046115892293015256,
+    "p50": 0.10925684937171104,
+    "p90": 0.1160641640879625,
+    "p95": 0.11878103615281137,
+    "p99": 0.1251873379808357,
+    "max": 0.16284620948135853
+  },
+  "e2e_latency_s": {
+    "count": 2160,
+    "mean": 67.69715749113088,
+    "std": 33.46507730553074,
+    "min": 0.9834547908976674,
+    "p50": 67.44728241767734,
+    "p90": 111.60816825674847,
+    "p95": 121.55853386605152,
+    "p99": 135.57553742468338,
+    "max": 151.72931113652885
+  },
+  "output_tokens": {
+    "count": 2160,
+    "mean": 300.44953703703703,
+    "std": 198.70654253466833,
+    "min": 4.0,
+    "p50": 268.0,
+    "p90": 600.0,
+    "p95": 731.0,
+    "p99": 769.4099999999999,
+    "max": 1395.0
+  },
+  "output_token_throughput": 2163.853833849883,
+  "request_throughput": 7.20205414589519,
+  "dispatch_lag_s": {
+    "count": 2160,
+    "mean": 0.004094923134996659,
+    "std": 0.011947252246189564,
+    "min": 1.6587786376476288e-05,
+    "p50": 0.0011288519017398357,
+    "p90": 0.008920728322118536,
+    "p95": 0.014975056657567608,
+    "p99": 0.0478667729441076,
+    "max": 0.20473918318748474
+  },
+  "gpu_telemetry": {
+    "sample_count": 294,
+    "temperature_c": {
+      "count": 294,
+      "mean": 70.78231292517007,
+      "std": 1.3119907851982744,
+      "min": 58.0,
+      "p50": 71.0,
+      "p90": 72.0,
+      "p95": 72.0,
+      "p99": 72.0,
+      "max": 72.0
+    },
+    "sm_clock_mhz": {
+      "count": 294,
+      "mean": 1593.6734693877552,
+      "std": 71.8862161449385,
+      "min": 1395.0,
+      "p50": 1590.0,
+      "p90": 1695.0,
+      "p95": 1725.0,
+      "p99": 1740.0,
+      "max": 1740.0
+    },
+    "power_w": {
+      "count": 294,
+      "mean": 293.4943877551021,
+      "std": 13.819030558528235,
+      "min": 116.53,
+      "p50": 295.475,
+      "p90": 302.914,
+      "p95": 306.15749999999997,
+      "p99": 309.3106,
+      "max": 311.34
+    },
+    "memory_used_mib_max": 42809,
+    "throttle_reasons_observed": [
+      "sw_power_cap"
+    ],
+    "throttled_fraction": 0.0
+  },
+  "validity": "oversubscribed",
+  "validity_notes": [
+    "achieved only 7.20 of 12.00 offered req/s (60%) \u2014 the server did not keep up, so the queue grew without bound and latency reflects run duration rather than steady state",
+    "clock lock of 1740 MHz is recorded but unverifiable while GPU 1 is idle \u2014 an A40 drops to ~210 MHz at idle even when locked. It is re-checked against sampled clocks once the run completes.",
+    "another GPU in this chassis is under load: GPU0 (NVIDIA A40): 26075 MiB, 97% util. A40s are passively cooled and share chassis airflow, so inlet temperature on the measurement device is elevated. Results are stamped neighbor_gpu_busy=true."
+  ]
+}

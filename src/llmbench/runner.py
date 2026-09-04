@@ -37,7 +37,7 @@ from pathlib import Path
 
 from llmbench.config import EngineProfile, SweepConfig, load_engine_profile
 from llmbench.engines.base import EngineHandle, EngineLaunchSpec, EngineProcess, resolve_digest
-from llmbench.engines.preflight import PreflightReport, run_preflight
+from llmbench.engines.preflight import PreflightReport, check_model_cached, run_preflight
 from llmbench.engines.sglang import SglangEngine
 from llmbench.engines.vllm import VllmEngine
 from llmbench.loadgen.client import LoadGenConfig, LoadGenResult, RequestRecord, run_open_loop
@@ -409,13 +409,20 @@ class SweepRunner:
         for warning in preflight.warnings:
             print(f"  [preflight] {warning}")
 
-        written: list[Path] = []
-
         targets = (
             [self.config.configuration(cid) for cid in config_ids]
             if config_ids
             else list(self.config.configurations)
         )
+
+        # Check every checkpoint before launching anything. A missing one is
+        # fatal either way, and discovering it at minute 0 costs nothing while
+        # discovering it after the first configuration's pass costs an hour.
+        for entry in targets:
+            quant = self.config.quantization_for(entry.id)
+            check_model_cached(quant.hf_id, quant.revision, self.hf_cache_dir)
+
+        written: list[Path] = []
 
         for entry in targets:
             profile = load_engine_profile(entry.engine, self.configs_dir)

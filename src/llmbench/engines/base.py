@@ -143,7 +143,13 @@ class EngineProcess(ABC):
         return [
             "run",
             "-d",
-            "--rm",
+            # Deliberately NOT --rm. A container that dies during startup is
+            # reaped instantly under --rm, so `docker logs` returns "No such
+            # container" and the actual traceback is gone. That turned a plain
+            # "checkpoint missing from the HF cache" error into an opaque
+            # container failure and cost a debugging cycle. Teardown is explicit
+            # in `stop()`, which runs on failure and again before each launch,
+            # so nothing accumulates.
             "--name",
             spec.container_name,
             # Selects host GPU N; inside the container it appears as index 0.
