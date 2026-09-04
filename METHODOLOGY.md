@@ -152,12 +152,30 @@ against clocks sampled during the measurement window.
 
 ## 5. Known confounds
 
-**Chassis thermal coupling.** The measurement GPU shares a passively-cooled chassis with a
-second A40. When the neighbouring card is under load it raises inlet air temperature on the
-measurement device. Mitigations: measurement is pinned to a single GPU; clocks are locked;
-throttle telemetry is captured per run; every record carries a `neighbor_gpu_busy` flag; and a
-**drift canary** re-runs the first configuration at the end of the sweep. If canary and original
-agree within noise, environmental drift across the sweep is bounded.
+**Chassis thermal coupling — measured, and smaller than feared.** The measurement GPU shares a
+passively-cooled chassis with a second A40. When the neighbouring card is under load it raises
+inlet air temperature on the measurement device. Mitigations: measurement is pinned to a single
+GPU; clocks are locked; throttle telemetry is captured per run; and every record carries a
+`neighbor_gpu_busy` flag so no result can quietly lose its asterisk.
+
+66 of the 168 runs were measured beside a busy neighbour, including **both SGLang
+configurations in their entirety** — which puts the confound directly on the engine axis, where
+it matters most. The stamp made it possible to check rather than argue about:
+
+| | runs | temp mean | temp max | SM clock | power | throttled samples |
+|---|---|---|---|---|---|---|
+| busy neighbour | 60 | 68.8 °C | 72 °C | 1669 MHz | 287.9 W | 0 |
+| quiet chassis | 63 | 69.9 °C | 72 °C | 1662 MHz | 289.7 W | 0 |
+
+Runs beside a busy neighbour were **1.1 °C cooler at 7 MHz higher clocks** — the opposite
+direction to the feared effect, and small. No record throttled; the only reason ever observed
+anywhere in the sweep is `sw_power_cap`, which is the card's own 300 W budget rather than
+thermal coupling. `vllm-bf16` crosses the quiet-to-busy boundary between 4 and 5 rps with no
+discontinuity in TTFT, TPOT or throughput.
+
+This does not prove the coupling is always negligible; it bounds it for these runs, on this
+chassis, at this ambient. The stamp stays on the records so a reader can check the claim
+instead of taking the paragraph on trust.
 
 **The sweep is never parallelised across both GPUs.** Doing so would halve wall-clock and
 reintroduce exactly the shared-airflow, shared-PCIe, shared-vCPU confound the rest of this
@@ -192,6 +210,36 @@ documentation or prior experience would suggest.
 | Engine startup | ~220 s to healthy; 54.2 s engine init of which **29.6 s is compilation**, 6 s CUDA graph capture | All of it precedes the measurement window. Amortised by starting the engine once per configuration. |
 | vLLM image on disk | **18.9 GB** (10.3 GB compressed) | Roughly double the planning estimate; the disk budget was revised accordingly. |
 | Driver ceiling | 570.133.07 → CUDA 12.x only | SGLang **must** be a `-cu129` build. A `-cu130` image needs driver ≥ 580 and fails at container start with a CUDA init error that never mentions the driver. |
+| Shared HF cache | Three quantized checkpoints **deleted mid-sweep** by another user reclaiming disk | The cache is bind-mounted read-only, by design, so a missing checkpoint cannot self-heal by downloading. Preflight now asserts the pinned repository *and* revision are present before any engine launches. |
+
+### A shared machine will delete your inputs
+
+Between two passes of the sweep, the three quantized checkpoints vanished from the host
+Hugging Face cache — another user on the box reclaiming disk. Two configurations then failed at
+container start, and the failure said only `No such container`, because the engines run with
+`docker run --rm` and Docker reaps a container the instant it dies. The flag intended to tidy
+up had destroyed the only evidence of what went wrong. Re-running the identical command without
+it produced the real error immediately:
+
+```
+OSError: [Errno 30] Read-only file system:
+  '/root/.cache/huggingface/hub/models--RedHatAI--...w8a8'
+```
+
+Three things came out of this, all of them cheap and none of them obvious beforehand:
+
+* **`--rm` is incompatible with diagnosability.** Teardown is explicit in `stop()` anyway, so
+  the flag bought nothing and cost a debugging cycle.
+* **Preflight checks the revision, not just the repository.** A cached repo at the wrong commit
+  is not the pinned checkpoint, and accepting it would quietly measure different weights.
+* **The check runs over the whole matrix before the first engine starts.** A missing checkpoint
+  is fatal either way; discovering it at minute zero costs a second, and discovering it after
+  the first configuration's pass costs an hour.
+
+Nothing measured was lost — the affected records predate the deletion. Because model revisions
+are pinned to commit SHAs rather than branch names, the re-downloaded weights are provably the
+same ones, which is the reproducibility argument this repository makes, tested against an
+accident rather than asserted.
 
 ### Prometheus metric names were verified, not assumed
 
