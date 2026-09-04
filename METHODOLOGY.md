@@ -59,7 +59,17 @@ Every request records `dispatch_lag` = actual − scheduled dispatch time. If p9
 exceeds threshold the run is marked `CLIENT_SATURATED` and excluded from headline results. The
 record is kept, because the rate at which a harness runs out of headroom is itself a finding.
 
-_(pending: measured dispatch-lag distributions per rate)_
+Measured dispatch lag, BF16, p99 across three repeats:
+
+| Offered | 1 rps | 2 rps | 4 rps | 8 rps | 12 rps | 24 rps |
+|---|---|---|---|---|---|---|
+| p99 lag | 5 ms | 7 ms | 14 ms | 49 ms | 55 ms | 185 ms |
+| as % of TTFT p95 | 3.3 % | 5.1 % | 5.6 % | 0.27 % | 0.04 % | 0.04 % |
+
+The client stayed well inside its budget throughout. Note that lag matters
+*most* at low rates, where it is a larger share of a small TTFT — the opposite
+of the intuition that high load is where the harness breaks. See
+[Saturation is not client failure](#saturation-is-not-client-failure).
 
 ---
 
@@ -217,6 +227,71 @@ because a larger batch amortises each weight read across more tokens.
 
 The premise behind the whole quantization axis is therefore established by
 measurement before any quantized configuration is benchmarked.
+
+### Saturation is not client failure
+
+Beyond capacity, the two look alike and are not the same thing. Measured on
+this hardware, achieved request rate pins at **~6.15 req/s** no matter what is
+offered — 8, 12, 16 and 24 rps all achieve it. Past that point the queue grows
+without bound and TTFT becomes a function of how long the run lasted (129 s at
+12 rps, 456 s at 24 rps) rather than of the offered load.
+
+The first version of the validity guard labelled those runs `CLIENT_SATURATED`,
+because dispatch lag crossed its absolute and inter-arrival thresholds. But lag
+was **0.04 % of the measured TTFT**. Blaming the harness for the server's
+capacity limit would have been exactly the misattribution this document
+criticises elsewhere.
+
+Two consequences, both now enforced:
+
+* **Client saturation is judged relative to what is being measured.** A 55 ms
+  dispatch lag contaminates a 140 ms TTFT and is irrelevant against 129 s.
+* **`OVERSUBSCRIBED` outranks `CLIENT_SATURATED`.** Past capacity the two are
+  not independent: a server that cannot keep up leaves thousands of requests in
+  flight, and that alone induces lag in any client. The lag is a symptom.
+
+Oversubscribed runs are excluded from the frontier but kept and reported. They
+are how the saturation point is located.
+
+### What the smoke gate cannot catch
+
+`make bench-smoke` runs the pipeline end to end in ~6 minutes and is the gate
+before the full matrix. It cannot, in principle, cover everything the sweep hits.
+
+The smoke config runs 30 s at rates 1 and 4, drawing ~150 requests. The full
+sweep draws 4370 at 24 rps. When the sweep first ran, it died at its seventh
+measurement on a ShareGPT conversation with a 4634-token prompt against
+`max_model_len=4096` — a sample from the tail of a heavy-tailed distribution,
+reachable only at the sample sizes the real run uses.
+
+A gate that runs a *smaller version* of the workload cannot surface failures
+that live in the tail. That is a limitation of the gate, not a bug in it, and
+it is the reason the sweep writes one validated JSON per measurement: when the
+tail does bite, it costs one measurement rather than the run.
+
+### A worked example of this repository's own thesis
+
+The first complete quality result parsed cleanly and looked plausible. Checked
+against published numbers rather than accepted, it was wrong by 32 points:
+
+| Metric | Measured | Published | |
+|---|---|---|---|
+| WikiText-2 PPL | 6.3546 | ~6.2–6.5 | ok |
+| GSM8K strict | 0.7286 | ~0.76–0.84 | ok |
+| IFEval prompt-strict | **0.4603** | ~0.78–0.80 | **32 points low** |
+
+IFEval is a 0-shot *instruction-following* benchmark. Served through raw
+`/v1/completions` with no chat template, an instruct model continues text rather
+than acting as an assistant. Routing it through `/v1/chat/completions` with the
+template moved prompt-level strict accuracy from **0.4603 to 0.7000** and
+instruction-level from 0.6019 to 0.7937.
+
+The number was not noise and not a bug in the sense a test would catch — it
+passed type checking, linting and 359 tests. It was a *plausible* number
+produced by the wrong experiment, and only comparison against an external
+reference exposed it. That is the failure mode this repository is about, and it
+happened here.
+
 
 ### Harness cross-check against a live engine
 
