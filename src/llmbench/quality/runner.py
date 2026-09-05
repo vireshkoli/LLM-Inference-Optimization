@@ -19,6 +19,8 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
+
 from llmbench.config import SweepConfig, load_engine_profile
 from llmbench.engines.base import EngineHandle, EngineLaunchSpec, EngineProcess, resolve_digest
 from llmbench.engines.preflight import PreflightReport, run_preflight
@@ -116,31 +118,40 @@ class QualityRunner:
 
         tokenizer = load_tokenizer(quant.hf_id, quant.revision, self.hf_cache_dir)
         tokens = load_wikitext_tokens(self.wikitext_path, tokenizer, max_tokens=self.ppl_tokens)
-        ppl = compute_perplexity(
-            handle.base_url,
-            quant.hf_id,
-            tokens,
-            # max_model_len - 1, not max_model_len. vLLM validates
-            # prompt_len + at-least-one-output-token <= max_model_len even when
-            # max_tokens=0, so a full-length window is rejected with a 400.
-            context_len=spec.max_model_len - 1,
-            # Half the context: every token is scored with at least
-            # max_model_len/2 tokens of left-context.
-            stride=spec.max_model_len // 2,
-        )
-        print(
-            f"  wikitext2 ppl {ppl.perplexity:.4f} "
-            f"({ppl.tokens_scored:,} tokens, {ppl.windows} windows)"
-        )
-        scores.append(
-            QualityScore(
-                task=QualityTask.WIKITEXT2_PPL,
-                metric="perplexity",
-                value=ppl.perplexity,
-                stderr=None,
-                num_samples=ppl.tokens_scored,
+        try:
+            ppl = compute_perplexity(
+                handle.base_url,
+                quant.hf_id,
+                tokens,
+                # max_model_len - 1, not max_model_len. vLLM validates
+                # prompt_len + at-least-one-output-token <= max_model_len even when
+                # max_tokens=0, so a full-length window is rejected with a 400.
+                context_len=spec.max_model_len - 1,
+                # Half the context: every token is scored with at least
+                # max_model_len/2 tokens of left-context.
+                stride=spec.max_model_len // 2,
             )
-        )
+        except (ValueError, httpx.HTTPError) as exc:
+            # Scoring a prompt needs `echo=true` with `max_tokens=0`, which is a
+            # vLLM extension of the OpenAI completions API rather than a
+            # guarantee every engine makes. Losing perplexity must not also lose
+            # the task scores, which cost the same engine launch and are what
+            # the quality axis of the frontier is actually built from.
+            print(f"  [warn] perplexity unavailable on this engine: {exc}")
+        else:
+            print(
+                f"  wikitext2 ppl {ppl.perplexity:.4f} "
+                f"({ppl.tokens_scored:,} tokens, {ppl.windows} windows)"
+            )
+            scores.append(
+                QualityScore(
+                    task=QualityTask.WIKITEXT2_PPL,
+                    metric="perplexity",
+                    value=ppl.perplexity,
+                    stderr=None,
+                    num_samples=ppl.tokens_scored,
+                )
+            )
 
         if not self.skip_tasks:
             harness = HarnessConfig(
