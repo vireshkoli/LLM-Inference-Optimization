@@ -47,8 +47,16 @@ one completes. When the server slows, the generator slows with it, so the slow p
 under-sampled — **coordinated omission**. The measured tail is then systematically optimistic,
 and the tail is precisely the number anyone cares about. A closed-loop run is *defined* in the
 sweep (`vllm-bf16-closed-loop`) as an exhibit that would demonstrate the size of this error on
-this hardware; **it has not been run yet**, and when it is it is never reported as a headline
-result. The open-loop argument above stands on its own; the exhibit would quantify it.
+this hardware. It is implemented (`llmbench.loadgen.closed_loop`) and queued behind GPU
+availability; when it runs it is never reported as a headline result. The open-loop argument
+above stands on its own; the exhibit quantifies it.
+
+The exhibit reuses `fire_one`, the open-loop generator's own request function, rather than
+reimplementing it. Two generators with two SSE parsers and two TTFT definitions would differ in
+more than their arrival process, and the exhibit would stop isolating the one variable it
+exists to isolate. Its concurrency is chosen so achieved throughput matches the open-loop run
+it is compared against, because a tail comparison across different offered loads measures the
+load rather than the generator.
 
 **Schedule determinism.** The full arrival schedule and prompt list are generated from a fixed
 seed *before* the run begins. Every configuration therefore faces a byte-identical offered load,
@@ -82,11 +90,29 @@ and length distribution changes batching behaviour completely.
 - **Primary:** input/output lengths sampled from **ShareGPT** conversations — real
   human/assistant turns, and the same source vLLM's own `benchmark_serving.py` uses, so numbers
   remain comparable to published work.
-- **Secondary, defined but not yet run:** an **Azure LLM Inference Trace** replay, supplying
-  real production *arrival timestamps* rather than assumed Poisson. Poisson is itself a
-  modelling assumption, and this run would quantify what that assumption costs at the tail.
-  Every result currently published therefore rests on Poisson arrivals, and that is a stated
-  assumption rather than a validated one.
+- **Secondary:** an **Azure LLM Inference Trace** replay, supplying real production *arrival
+  timestamps* rather than assumed Poisson. The replay itself is queued behind GPU availability,
+  but the trace has already been characterised, and the result is worth stating before the
+  latency numbers arrive.
+
+  **The published Azure conversation trace is very close to Poisson at this timescale.** In a
+  180 s window matched to 4 req/s, its inter-arrival times have a squared coefficient of
+  variation of **1.02** against a Poisson process's 1.00. The expectation going in was that
+  real traffic would be markedly burstier; measured, at the rate and window this benchmark
+  operates on, it is not.
+
+  That measurement is what the metric is for, and getting it required fixing the metric first.
+  An earlier version divided inter-arrival variance by the mean, which is not dimensionless —
+  for an Exponential distribution it *equals* the mean, so it reads 1.0 only at exactly 1 req/s
+  and 0.25 at 4 req/s, and a trace would appear to become less bursty purely by arriving
+  faster. It is now variance over mean squared, whose Poisson reference is 1.0 at any rate.
+
+  Window selection matters as much as the metric. Windows are contiguous, because sampling
+  requests from across the trace would destroy the temporal correlation that makes it bursty
+  and leave a reordered Poisson-ish process wearing a trace's name; and they must fit entirely
+  inside the trace, because a truncated window near the end holds few requests, reports a rate
+  far below the trace's real one, and would be selected as the closest match to any low target
+  while offering a fraction of the intended load.
 
 **Output length is enforced**, via `max_tokens` set to the sampled length together with
 `ignore_eos=True`. Without this, different quantization levels stop at different points and the
@@ -396,11 +422,32 @@ to assume the author got lucky once.
 
 ## 9. Cross-validation
 
-One configuration is additionally measured with vLLM's upstream `benchmark_serving.py`.
-Agreement between an independent implementation and this harness is stronger evidence of
-correctness than any amount of self-written unit testing.
+One configuration is additionally measured with vLLM's own harness, `vllm bench serve`, which
+ships inside the pinned engine image. Agreement between an independent implementation and this
+one is stronger evidence of correctness than any amount of self-written unit testing: every
+other check here is self-referential — the percentile function against numpy, the arrival
+process against a KS test, TTFT against internal consistency — and all of it can be true while
+the harness measures the wrong thing consistently.
 
-_(pending: agreement figures)_
+**Run inside the engine's own container**, so there is no second Python environment to install,
+drift, or explain. The comparison is then between two harnesses rather than two environments.
+
+**Matched deliberately:** same live server, model, seed, request rate, ShareGPT corpus,
+`/v1/completions` endpoint, `ignore_eos`, and `--burstiness 1.0` stated explicitly rather than
+left to a default — leaving the arrival process implicit is the easiest way to compare two
+different workloads and then call the disagreement a bug.
+
+**Deliberately not matched:** the dispatch loop, the SSE parsing, the TTFT definition and the
+percentile implementation. Those are the subject of the comparison; making them match would
+defeat it.
+
+Agreement is judged at ±5 %. That is loose enough to absorb the difference between two separate
+measurements against a live server — they are not replays of one run — and tight enough that a
+real defect in either dispatch loop or percentile implementation would show. A larger
+disagreement is a finding, not noise.
+
+_Agreement figures are generated into REPORT.md §6 by `make crossvalidate`; the run is queued
+behind GPU availability._
 
 ---
 

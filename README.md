@@ -183,16 +183,25 @@ capacity, and a benchmark showing only its usable runs has hidden its own error 
 ### What is not yet measured
 
 Listed because a benchmark that shows only its finished work has told you less than it appears
-to. These are defined in `configs/sweep.yaml` under `methodology_runs` and have not been run:
+to. All six are **implemented, tested and queued**; they are waiting on GPU availability, since
+this is a shared machine. REPORT.md renders "has not been run yet" for each until it lands,
+rather than a placeholder number.
 
-| Not yet run | What it would establish |
+| Queued | What it establishes |
 |---|---|
 | **Azure trace replay** | What the Poisson assumption itself costs at the tail, against real production inter-arrival times |
-| **Closed-loop exhibit** | Coordinated omission, demonstrated on the same offered load rather than asserted |
+| **Closed-loop exhibit** | Coordinated omission, demonstrated on matched throughput rather than asserted |
 | **Drift canary** | Bounds environmental drift across the sweep by re-running the first configuration last |
-| **Cross-validation vs upstream `benchmark_serving.py`** | Agreement with an independent implementation — stronger evidence of correctness than any amount of self-written testing |
+| **Cross-validation vs `vllm bench serve`** | Agreement with an independent implementation — stronger evidence of correctness than any amount of self-written testing |
 | **Quality for the SGLang configurations** | SGLang currently appears on the latency and cost axes but not on the quality frontier |
 | **Rate ladder above 8 rps for INT8** | INT8-W8A8's true saturation point; it is the only configuration still healthy at the top of the current ladder |
+
+One result from that work is already in, because characterising the trace does not need a GPU:
+**the published Azure conversation trace is very close to Poisson at this timescale** — a
+squared coefficient of variation of 1.02 against Poisson's 1.00, in a window matched to 4 rps.
+The expectation was that real traffic would be markedly burstier. It is not, at the rate and
+window this benchmark operates on, and being able to say so is the difference between assuming
+an arrival model and having checked it.
 
 The harness cross-check that *has* been done is internal consistency against a live engine
 (METHODOLOGY §5a): `TPOT p50 × 63 + TTFT p50 = 1995 ms` against an independently measured
