@@ -173,13 +173,32 @@ class DriftComparison:
 
 
 def drift_comparison(
-    runs: Sequence[RunResult], *, config_id: str, canary_label: str, rate_rps: float
+    runs: Sequence[RunResult],
+    *,
+    config_id: str,
+    canary_label: str,
+    rate_rps: float,
+    min_separation_s: float = 3600.0,
+    min_repeats_per_side: int = 2,
 ) -> DriftComparison | None:
     """Compare a canary re-run against the original measurement.
 
-    The canary is identified by its own ``config_id`` being the original's while
-    its file label differs, so the two are matched on rate and separated by
-    start time: the later group is the canary.
+    A canary is the same configuration measured again *hours later*, so the two
+    groups are separated by finding the largest gap in start time. Two guards
+    stop that from inventing a canary out of ordinary repeats:
+
+    ``min_separation_s`` — consecutive repeats of one rate point run minutes
+    apart, so the largest gap between them is small. Without a floor, splitting
+    on it produces two arbitrary groups and reports the difference between them
+    as environmental drift. That happened: three repeats four minutes apart were
+    split 1-and-2 and reported +77.6 ms of drift against a standard deviation of
+    zero, because a single-run group has no variance.
+
+    ``min_repeats_per_side`` — the verdict is "within the sweep's own noise", and
+    a group of one measurement carries no noise estimate to compare against.
+
+    Returns ``None`` when no genuine canary is present, so the report says the
+    canary has not been run rather than showing a fabricated one.
     """
     same = [
         r
@@ -200,9 +219,11 @@ def drift_comparison(
     ]
     if not gaps:
         return None
-    _, split = max(gaps, key=lambda g: g[0])
+    largest, split = max(gaps, key=lambda g: g[0])
+    if largest.total_seconds() < min_separation_s:
+        return None
     first, later = same[:split], same[split:]
-    if not first or not later:
+    if len(first) < min_repeats_per_side or len(later) < min_repeats_per_side:
         return None
 
     first_ttft = summarize([r.ttft_s.p95 * 1e3 for r in first])

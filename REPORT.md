@@ -236,7 +236,58 @@ records are kept and published rather than deleted: which offered rates a config
 
 ---
 
-## 6. The engine axis
+## 6. Does the methodology hold up?
+
+The rest of this report rests on three methodological claims. Each is testable,
+and each has a run whose only purpose is to test it rather than to rank a configuration.
+None of these appear on the frontier: a trace replay and a closed-loop run carry no offered
+rate, which is the field every aggregation keys on, so they are structurally excluded from
+the operating points above.
+
+### Coordinated omission, and what the Poisson assumption costs
+
+Both exhibits face the same server and the same seeded prompts as the open-loop baseline;
+only the arrival process differs. The closed-loop pool size is chosen so achieved throughput
+matches, because a tail comparison across different offered loads measures the load, not the
+generator.
+
+<!-- BEGIN:methodology-table -->
+_No methodology exhibits have been run yet._
+<!-- END:methodology-table -->
+
+A closed-loop generator issues its next request only when a previous one returns, so when the
+server slows the generator slows with it and the slow period is under-sampled. The periods
+that hurt most contribute the fewest samples. Any ratio above 1.0 in the last column is the
+size of that error, measured on this hardware rather than cited.
+
+### Environmental drift across the sweep
+
+The first configuration re-run at the end, identical in every respect. If it agrees with the
+original within the sweep's own repeat-to-repeat noise, results measured hours apart are
+comparable; if it does not, every cross-configuration claim above is weakened.
+
+<!-- BEGIN:drift-table -->
+_The drift canary has not been run yet._
+<!-- END:drift-table -->
+
+### Agreement with an independent harness
+
+Every other correctness check in this repository is self-referential — the percentile function
+against numpy, the arrival process against a KS test, TTFT against internal consistency. All of
+it can be true while the harness measures the wrong thing consistently.
+
+<!-- BEGIN:crossvalidation-table -->
+_Cross-validation against `vllm bench serve` has not been run yet._
+<!-- END:crossvalidation-table -->
+
+Both harnesses were given the same seed, rate, corpus, endpoint and `ignore_eos`, with
+Poisson arrivals stated explicitly on the upstream side rather than left to a default. What
+differs between them is precisely what is under test: the dispatch loop, the SSE parsing, the
+TTFT definition and the percentile implementation.
+
+---
+
+## 7. The engine axis
 
 SGLang was run as a reduced confirmation sweep, not as a co-equal subject — quantization is the
 primary axis and got the GPU-hours. Two observations:
@@ -260,7 +311,7 @@ with the asterisk rather than without it.
 
 ---
 
-## 7. Limitations
+## 8. Limitations
 
 - **One model, one GPU, one context length.** Llama-3.1-8B at `max_model_len=4096` on a single
   A40. Nothing here establishes behaviour at 70B, at long context, or across tensor parallelism.

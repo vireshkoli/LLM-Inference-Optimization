@@ -175,6 +175,11 @@ class TestDriftCanary:
             run_at(run_result, ttft_ms=(100.0, 200.0, 300.0), started=t0),
             run_at(run_result, ttft_ms=(100.0, 210.0, 300.0), started=t0 + timedelta(minutes=5)),
             run_at(run_result, ttft_ms=(100.0, 205.0, 300.0), started=t0 + timedelta(hours=9)),
+            run_at(
+                run_result,
+                ttft_ms=(100.0, 208.0, 300.0),
+                started=t0 + timedelta(hours=9, minutes=4),
+            ),
         ]
         drift = drift_comparison(
             runs, config_id=run_result.config_id, canary_label="drift-canary", rate_rps=4.0
@@ -190,6 +195,11 @@ class TestDriftCanary:
             run_at(run_result, ttft_ms=(100.0, 200.0, 300.0), started=t0),
             run_at(run_result, ttft_ms=(100.0, 201.0, 300.0), started=t0 + timedelta(minutes=5)),
             run_at(run_result, ttft_ms=(100.0, 900.0, 1200.0), started=t0 + timedelta(hours=9)),
+            run_at(
+                run_result,
+                ttft_ms=(100.0, 890.0, 1200.0),
+                started=t0 + timedelta(hours=9, minutes=4),
+            ),
         ]
         drift = drift_comparison(
             runs, config_id=run_result.config_id, canary_label="drift-canary", rate_rps=4.0
@@ -197,6 +207,23 @@ class TestDriftCanary:
         assert drift is not None
         assert drift.within_noise is False
         assert drift.ttft_drift_ms > 0
+
+    def test_ordinary_repeats_are_not_mistaken_for_a_canary(self, run_result: RunResult) -> None:
+        """Regression. Three repeats minutes apart were split on their largest
+        gap and reported +77.6 ms of drift against a standard deviation of zero,
+        because a single-run group has no variance to compare against."""
+        t0 = datetime(2026, 8, 19, 11, 4, tzinfo=UTC)
+        runs = [
+            run_at(run_result, ttft_ms=(100.0, 200.8, 300.0), started=t0),
+            run_at(run_result, ttft_ms=(100.0, 274.8, 300.0), started=t0 + timedelta(minutes=4)),
+            run_at(run_result, ttft_ms=(100.0, 282.1, 300.0), started=t0 + timedelta(minutes=8)),
+        ]
+        assert (
+            drift_comparison(
+                runs, config_id=run_result.config_id, canary_label="drift-canary", rate_rps=4.0
+            )
+            is None
+        )
 
     def test_single_measurement_yields_none(self, run_result: RunResult) -> None:
         assert (

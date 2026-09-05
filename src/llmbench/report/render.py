@@ -14,15 +14,19 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from llmbench.analysis.cost import best_under_sla, operating_points
+from llmbench.analysis.methodology import drift_comparison, process_comparison
 from llmbench.analysis.pareto import ParetoPoint, pareto_frontier
 from llmbench.analysis.plots import ParetoMarker
-from llmbench.schema import QualityResult, RunResult, RunValidity
+from llmbench.schema import ArrivalProcess, QualityResult, RunResult, RunValidity
 
 __all__ = [
     "MissingBlockError",
+    "crossvalidation_table",
+    "drift_table",
     "latency_table",
     "load_quality",
     "load_runs",
+    "methodology_table",
     "pareto_markers",
     "quality_scores",
     "quality_table",
@@ -308,3 +312,100 @@ def render_into(path: Path, blocks: Mapping[str, str]) -> set[str]:
     if updated != text:
         path.write_text(updated)
     return seen
+
+
+def methodology_table(
+    runs: Sequence[RunResult], *, baseline_config_id: str, rate_rps: float
+) -> str:
+    """Coordinated omission and burstiness, each against its matched baseline.
+
+    Rows appear only for exhibits that have actually been run. A table that
+    invented a row for an unexecuted run would be claiming a measurement.
+    """
+    lines = [
+        "| Arrival process | TTFT p50 | TTFT p95 | TTFT p99 | Throughput | vs Poisson (p99) |",
+        "|---|---|---|---|---|---|",
+    ]
+    baseline_shown = False
+    rows = 0
+
+    for process, label in (
+        (ArrivalProcess.CLOSED_LOOP, "Closed loop (exhibit)"),
+        (ArrivalProcess.TRACE_REPLAY, "Azure trace replay"),
+    ):
+        cmp = process_comparison(
+            runs,
+            process=process,
+            baseline_config_id=baseline_config_id,
+            baseline_rate_rps=rate_rps,
+            label=label,
+        )
+        if cmp is None:
+            continue
+        if not baseline_shown:
+            lines.append(
+                f"| **Open-loop Poisson** (baseline) | {cmp.baseline_ttft_p50_ms:.0f} ms "
+                f"| {cmp.baseline_ttft_p95_ms:.0f} ms | {cmp.baseline_ttft_p99_ms:.0f} ms "
+                f"| {cmp.baseline_throughput:.0f} tok/s | — |"
+            )
+            baseline_shown = True
+        ratio = cmp.understatement_ratio("p99")
+        verdict = f"{ratio:.2f}x {'understated' if ratio > 1 else 'worse'}"
+        if not cmp.comparable:
+            verdict += f" (throughput {cmp.throughput_ratio:.0%} of baseline — not comparable)"
+        lines.append(
+            f"| {cmp.label} | {cmp.ttft_p50_ms:.0f} ms | {cmp.ttft_p95_ms:.0f} ms "
+            f"| {cmp.ttft_p99_ms:.0f} ms | {cmp.throughput:.0f} tok/s | {verdict} |"
+        )
+        rows += 1
+
+    if rows == 0:
+        return "_No methodology exhibits have been run yet._"
+    return "\n".join(lines)
+
+
+def drift_table(runs: Sequence[RunResult], *, config_id: str, rate_rps: float) -> str:
+    """Whether the environment moved across the sweep."""
+    drift = drift_comparison(runs, config_id=config_id, canary_label=config_id, rate_rps=rate_rps)
+    if drift is None:
+        return "_The drift canary has not been run yet._"
+
+    verdict = (
+        "within noise — environmental drift across the sweep is bounded"
+        if drift.within_noise
+        else "**outside noise** — results measured hours apart are not directly comparable"
+    )
+    return "\n".join(
+        [
+            "| | First measurement | Re-run at end of sweep | Δ |",
+            "|---|---|---|---|",
+            f"| TTFT p95 | {drift.first_ttft_p95_ms:.1f} ms | {drift.later_ttft_p95_ms:.1f} ms "
+            f"| {drift.ttft_drift_ms:+.1f} ms |",
+            f"| Throughput | {drift.first_throughput:.0f} tok/s "
+            f"| {drift.later_throughput:.0f} tok/s | {drift.throughput_drift_pct:+.1f} % |",
+            "",
+            f"Repeat-to-repeat std of the original: ±{drift.first_ttft_std_ms:.1f} ms. "
+            f"The re-run is {verdict}.",
+        ]
+    )
+
+
+def crossvalidation_table(path: Path) -> str:
+    """Agreement with vLLM's own harness, read from a completed comparison."""
+    if not path.exists():
+        return "_Cross-validation against `vllm bench serve` has not been run yet._"
+
+    payload = json.loads(path.read_text())
+    lines = [
+        f"One configuration (`{payload['config_id']}` at {payload['rate_rps']:g} rps) measured "
+        f"independently by vLLM's own `vllm bench serve`, against the same live server:",
+        "",
+        "| Metric | This harness | `vllm bench serve` | Δ | Agrees (±5 %) |",
+        "|---|---|---|---|---|",
+    ]
+    for m in payload["metrics"]:
+        lines.append(
+            f"| {m['metric']} | {m['ours']:.2f} {m['unit']} | {m['upstream']:.2f} {m['unit']} "
+            f"| {m['delta_pct']:+.1f} % | {'yes' if m['agrees'] else '**NO**'} |"
+        )
+    return "\n".join(lines)

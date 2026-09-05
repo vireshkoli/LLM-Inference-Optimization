@@ -33,8 +33,11 @@ from llmbench.engines.sglang import SglangEngine
 from llmbench.engines.vllm import VllmEngine
 from llmbench.report.render import (
     cost_note,
+    crossvalidation_table,
+    drift_table,
     latency_table,
     load_quality,
+    methodology_table,
     pareto_markers,
     quality_table,
     render_into,
@@ -274,6 +277,9 @@ def report(
     sla_ttft_ms: Annotated[
         float, typer.Option(help="p95 TTFT budget for the headline chart")
     ] = 500.0,
+    sla_methodology_rate: Annotated[
+        float, typer.Option(help="Poisson rate the methodology exhibits are compared against")
+    ] = 4.0,
 ) -> None:
     """Regenerate every chart and table in README/REPORT from results JSON.
 
@@ -312,6 +318,11 @@ def report(
 
     blocks = {
         "sla-table": sla_table(runs, gpu_hourly_usd=price, ttft_budgets_ms=budgets),
+        "methodology-table": methodology_table(
+            runs, baseline_config_id="vllm-bf16", rate_rps=sla_methodology_rate
+        ),
+        "drift-table": drift_table(runs, config_id="vllm-bf16", rate_rps=sla_methodology_rate),
+        "crossvalidation-table": crossvalidation_table(results.parent / "crossvalidation.json"),
         "latency-table": latency_table(runs, price),
         "validity": validity_summary(runs),
         "cost-note": cost_note(
