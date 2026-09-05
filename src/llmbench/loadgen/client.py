@@ -33,7 +33,7 @@ from llmbench.loadgen.stream import StreamCollector, StreamResult
 from llmbench.workload.arrivals import ArrivalSchedule
 from llmbench.workload.prompts import RequestSpec
 
-__all__ = ["LoadGenConfig", "LoadGenResult", "RequestRecord", "run_open_loop"]
+__all__ = ["LoadGenConfig", "LoadGenResult", "RequestRecord", "fire_one", "run_open_loop"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +122,7 @@ def _build_payload(spec: RequestSpec, config: LoadGenConfig) -> dict[str, object
     }
 
 
-async def _fire_one(
+async def fire_one(
     client: httpx.AsyncClient,
     spec: RequestSpec,
     config: LoadGenConfig,
@@ -133,6 +133,12 @@ async def _fire_one(
     dispatch_time_s: float,
 ) -> RequestRecord:
     """Issue one streamed request and time it.
+
+    Public because the closed-loop exhibit in
+    :mod:`llmbench.loadgen.closed_loop` uses this exact function. If it
+    re-implemented the request path, the two runs would differ in their SSE
+    parsing and TTFT definition as well as in their arrival process, and the
+    exhibit would stop isolating the one variable it exists to isolate.
 
     Never raises: a transport failure becomes an error record. A sweep that has
     already cost GPU-hours must not die because one request was refused.
@@ -239,7 +245,7 @@ async def run_open_loop(
 
             tasks.append(
                 asyncio.create_task(
-                    _fire_one(
+                    fire_one(
                         client,
                         spec,
                         config,

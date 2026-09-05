@@ -35,12 +35,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from llmbench.config import EngineProfile, SweepConfig, load_engine_profile
+from llmbench.config import EngineProfile, MethodologyRun, SweepConfig, load_engine_profile
 from llmbench.engines.base import EngineHandle, EngineLaunchSpec, EngineProcess, resolve_digest
 from llmbench.engines.preflight import PreflightReport, check_model_cached, run_preflight
 from llmbench.engines.sglang import SglangEngine
 from llmbench.engines.vllm import VllmEngine
 from llmbench.loadgen.client import LoadGenConfig, LoadGenResult, RequestRecord, run_open_loop
+from llmbench.loadgen.closed_loop import run_closed_loop
 from llmbench.loadgen.guard import assess_validity
 from llmbench.metrics.percentiles import summarize
 from llmbench.schema import (
@@ -52,13 +53,19 @@ from llmbench.schema import (
     GPUTelemetry,
     HardwareInfo,
     HostInfo,
+    LengthSource,
     ModelConfig,
     Quantization,
     RunResult,
     WorkloadConfig,
 )
 from llmbench.telemetry.gpu import GpuSampler, nvidia_smi_query
-from llmbench.workload.arrivals import ArrivalSchedule, num_requests_for_duration, poisson_schedule
+from llmbench.workload.arrivals import (
+    ArrivalSchedule,
+    num_requests_for_duration,
+    poisson_schedule,
+    trace_schedule,
+)
 from llmbench.workload.corpus import ShareGptCorpus, load_sharegpt
 from llmbench.workload.lengths import EmpiricalLengthSampler, clamp_to_context
 from llmbench.workload.prompts import RequestSpec, build_requests
@@ -74,11 +81,27 @@ _ENGINES: dict[EngineName, type[EngineProcess]] = {
 
 @dataclass(frozen=True, slots=True)
 class RatePoint:
-    """One offered-load level: the workload every configuration will face."""
+    """One workload point: what a configuration will be asked to serve.
 
-    rate_rps: float
+    Usually an offered Poisson rate. The methodology runs reuse the same
+    structure with a different arrival process, so a trace replay and a
+    closed-loop exhibit travel through exactly the same measurement, assembly
+    and validity path as a headline run — which is what makes them comparable
+    to it.
+    """
+
+    #: Offered rate. ``None`` for trace replay and closed loop, neither of which
+    #: has one: a trace's arrivals come from the recording, and a closed loop's
+    #: load is a consequence of server speed.
+    rate_rps: float | None
     schedule: ArrivalSchedule
     specs: tuple[RequestSpec, ...]
+    arrival_process: ArrivalProcess = ArrivalProcess.POISSON
+    length_source: LengthSource | None = None
+    #: Worker-pool size; set only for the closed-loop exhibit.
+    concurrency: int | None = None
+    #: Distinguishes a methodology run's output file from a headline run's.
+    label: str | None = None
 
     @property
     def mean_interarrival_s(self) -> float:
@@ -224,6 +247,72 @@ class SweepRunner:
         self._rate_points[rate_rps] = point
         return point
 
+    def trace_point(self, *, target_rate_rps: float, trace_path: Path) -> RatePoint:
+        """Build a replay of recorded production arrivals.
+
+        Matched to ``target_rate_rps`` on purpose. The replay's whole claim is
+        that *burstiness* costs tail latency, and that claim is only readable
+        against a Poisson run offering the same mean load — otherwise a worse
+        tail could just as well be explained by more traffic.
+
+        Prompt *lengths* still come from the ShareGPT sampler rather than from
+        the trace's own token counts. The trace supplies arrival times; using
+        its lengths as well would change two variables at once and leave the
+        comparison unable to attribute the difference to either.
+        """
+        from llmbench.workload.trace import load_azure_trace, select_window  # noqa: PLC0415
+
+        defaults = self.config.defaults
+        corpus = self._load_corpus()
+        tokenizer = load_tokenizer(
+            self.config.model.hf_id, self.config.model.revision, self.hf_cache_dir
+        )
+        seed = self.config.workload.seed
+
+        window = select_window(
+            load_azure_trace(trace_path),
+            duration_s=defaults.measurement_duration_s,
+            target_rate_rps=target_rate_rps,
+        )
+        schedule = trace_schedule(window.timestamps_s)
+
+        sampler = EmpiricalLengthSampler(pairs=corpus.pairs)
+        pairs = clamp_to_context(
+            sampler.sample(len(schedule), seed=seed), self.config.model.max_model_len
+        )
+        specs = build_requests(pairs, corpus.corpus_token_ids, tokenizer, seed=seed)
+
+        print(
+            f"  [trace] {len(schedule)} arrivals over {defaults.measurement_duration_s:.0f}s "
+            f"= {window.mean_rate_rps:.2f} rps (target {target_rate_rps:g}), "
+            f"burstiness {window.burstiness:.2f} (Poisson = 1.00)"
+        )
+        return RatePoint(
+            rate_rps=None,
+            schedule=schedule,
+            specs=specs,
+            arrival_process=ArrivalProcess.TRACE_REPLAY,
+            length_source=LengthSource.AZURE_TRACE,
+        )
+
+    def closed_loop_point(self, *, concurrency: int, matched_rate_rps: float) -> RatePoint:
+        """Build the coordinated-omission exhibit.
+
+        Reuses the *identical* seeded prompt list as the open-loop run at
+        ``matched_rate_rps``, so the two differ only in how arrivals are
+        generated. The schedule is carried along unused: a closed loop dispatches
+        on completions, not on a clock, and keeping the field populated would
+        invite someone to read a dispatch lag that has no meaning here.
+        """
+        reference = self.rate_point(matched_rate_rps)
+        return RatePoint(
+            rate_rps=None,
+            schedule=reference.schedule,
+            specs=reference.specs,
+            arrival_process=ArrivalProcess.CLOSED_LOOP,
+            concurrency=concurrency,
+        )
+
     # ------------------------------------------------------------------
     # Engine
     # ------------------------------------------------------------------
@@ -275,14 +364,28 @@ class SweepRunner:
 
         sampler = GpuSampler(gpu_index=self.gpu_index, interval_s=1.0)
         sampler.start()
-        result = asyncio.run(
-            run_open_loop(
-                point.schedule,
-                point.specs,
-                loadgen_config,
-                warmup_requests=defaults.warmup_requests,
+        if point.arrival_process is ArrivalProcess.CLOSED_LOOP:
+            # The exhibit. Deliberately the same assembly and telemetry path as
+            # every other run: only the dispatcher differs, so any gap in the
+            # reported tail is attributable to the arrival process rather than
+            # to a second measurement implementation.
+            result = asyncio.run(
+                run_closed_loop(
+                    point.specs,
+                    loadgen_config,
+                    concurrency=point.concurrency or 1,
+                    warmup_requests=defaults.warmup_requests,
+                )
             )
-        )
+        else:
+            result = asyncio.run(
+                run_open_loop(
+                    point.schedule,
+                    point.specs,
+                    loadgen_config,
+                    warmup_requests=defaults.warmup_requests,
+                )
+            )
         telemetry = sampler.stop()
         finished = datetime.now(UTC)
 
@@ -365,9 +468,10 @@ class SweepRunner:
                 weights_gib=quant.expected_weights_gib,
             ),
             workload=WorkloadConfig(
-                arrival_process=ArrivalProcess.POISSON,
+                arrival_process=point.arrival_process,
                 request_rate_rps=point.rate_rps,
-                length_source=self.config.workload.length_source,
+                concurrency=point.concurrency,
+                length_source=point.length_source or self.config.workload.length_source,
                 seed=self.config.workload.seed,
                 num_requests=len(measured),
                 warmup_requests=defaults.warmup_requests,
@@ -458,14 +562,123 @@ class SweepRunner:
 
         return written
 
+    def run_methodology(
+        self,
+        *,
+        trace_path: Path = Path("data/azure_trace.csv"),
+        matched_rate_rps: float = 4.0,
+        closed_loop_concurrency: int = 64,
+        run_ids: list[str] | None = None,
+    ) -> list[Path]:
+        """Execute the runs that test the methodology rather than rank configs.
+
+        These are exhibits and controls, not operating points, and the analysis
+        excludes them from the frontier automatically: a trace replay and a
+        closed-loop run both carry ``request_rate_rps = None``, which is the
+        field every aggregation keys on.
+
+        Args:
+            matched_rate_rps: The Poisson rate the exhibits are compared against.
+                Both the trace window and the closed-loop concurrency are chosen
+                to offer comparable load, because a difference in tail latency is
+                only attributable to the arrival process when the load matches.
+        """
+        self.results_dir.mkdir(parents=True, exist_ok=True)
+        preflight = run_preflight(
+            self.gpu_index,
+            results_path=str(self.results_dir),
+            gpu_memory_utilization=self.config.defaults.gpu_memory_utilization,
+            require_locked_clocks=self.require_locked_clocks,
+        )
+        for warning in preflight.warnings:
+            print(f"  [preflight] {warning}")
+
+        planned = [m for m in self.config.methodology_runs if run_ids is None or m.id in run_ids]
+        for spec_entry in planned:
+            quant = self.config.quantization_for(spec_entry.config or spec_entry.repeat_of or "")
+            check_model_cached(quant.hf_id, quant.revision, self.hf_cache_dir)
+
+        written: list[Path] = []
+        for entry in planned:
+            config_id = entry.config or entry.repeat_of
+            if config_id is None:
+                print(f"  [skip] {entry.id}: names neither a config nor a repeat_of")
+                continue
+
+            profile = load_engine_profile(
+                self.config.configuration(config_id).engine, self.configs_dir
+            )
+            engine = _ENGINES[self.config.configuration(config_id).engine]()
+            spec = self._launch_spec(config_id, profile)
+
+            print(f"\n=== {entry.id} ({config_id}) ===")
+            print("  starting engine...")
+            handle = engine.start(spec)
+            print(f"  ready in {handle.startup_duration_s:.0f}s (kernel={handle.selected_kernel})")
+
+            try:
+                points = self._methodology_points(
+                    entry,
+                    trace_path=trace_path,
+                    matched_rate_rps=matched_rate_rps,
+                    closed_loop_concurrency=closed_loop_concurrency,
+                )
+                for repeat in range(self.config.defaults.repeats):
+                    for point in points:
+                        run = self.measure(handle, point, repeat, preflight)
+                        written.append(self._write(run, label=entry.id))
+                        print(
+                            f"  {entry.id} rep{repeat}: "
+                            f"TTFT p95 {run.ttft_s.p95 * 1e3:7.1f} ms | "
+                            f"TPOT p95 {run.tpot_s.p95 * 1e3:6.1f} ms | "
+                            f"{run.output_token_throughput:7.1f} tok/s | "
+                            f"{run.validity.value}"
+                        )
+            finally:
+                engine.stop(spec)
+                print("  engine stopped")
+
+        return written
+
+    def _methodology_points(
+        self,
+        entry: MethodologyRun,
+        *,
+        trace_path: Path,
+        matched_rate_rps: float,
+        closed_loop_concurrency: int,
+    ) -> list[RatePoint]:
+        """Turn one declared methodology run into the points to measure."""
+        if entry.arrival_process is ArrivalProcess.TRACE_REPLAY:
+            return [self.trace_point(target_rate_rps=matched_rate_rps, trace_path=trace_path)]
+        if entry.arrival_process is ArrivalProcess.CLOSED_LOOP:
+            return [
+                self.closed_loop_point(
+                    concurrency=entry.concurrency or closed_loop_concurrency,
+                    matched_rate_rps=matched_rate_rps,
+                )
+            ]
+        # A drift canary declares no arrival process: it is the *same* run as the
+        # original, repeated at the end of the sweep, and its value lies entirely
+        # in being identical. Anything else would measure a different thing and
+        # bound nothing.
+        return [self.rate_point(rate) for rate in self.config.workload.request_rates_rps]
+
     def _persist_startup_log(self, config_id: str, handle: EngineHandle) -> None:
         """Keep the kernel-selection evidence alongside the results."""
         log_dir = self.results_dir.parent / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / f"{config_id}.startup.log").write_text(handle.startup_log)
 
-    def _write(self, run: RunResult) -> Path:
-        name = f"{run.config_id}__{run.workload.request_rate_rps:g}rps__rep{run.repeat_index}.json"
+    def _write(self, run: RunResult, *, label: str | None = None) -> Path:
+        # The rate stays in the filename whenever there is one. A drift canary
+        # sweeps the whole ladder under a single label, so omitting it would
+        # have every rate overwrite the last and leave one file claiming to be
+        # the canary.
+        stem = label or run.config_id
+        rate = run.workload.request_rate_rps
+        suffix = f"__{rate:g}rps" if rate is not None else ""
+        name = f"{stem}{suffix}__rep{run.repeat_index}.json"
         path = self.results_dir / name
         path.write_text(json.dumps(json.loads(run.model_dump_json()), indent=2) + "\n")
         return path

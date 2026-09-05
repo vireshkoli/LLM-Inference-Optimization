@@ -21,7 +21,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from llmbench.schema import ArrivalProcess, EngineName, LengthSource
 
-__all__ = ["EngineProfile", "SweepConfig", "load_engine_profile", "load_sweep_config"]
+__all__ = [
+    "EngineProfile",
+    "MethodologyRun",
+    "SweepConfig",
+    "load_engine_profile",
+    "load_sweep_config",
+]
 
 PosInt = Annotated[int, Field(gt=0)]
 

@@ -22,7 +22,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Bumped only on a breaking change. tests/test_schema.py guards this.
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.2.0"
 
 NonNegFloat = Annotated[float, Field(ge=0.0)]
 PosInt = Annotated[int, Field(gt=0)]
@@ -225,8 +225,13 @@ class EngineConfig(_Base):
 
 class WorkloadConfig(_Base):
     arrival_process: ArrivalProcess
-    #: Offered load. None for TRACE_REPLAY, where arrivals come from the trace.
+    #: Offered load. None for TRACE_REPLAY, where arrivals come from the trace,
+    #: and for CLOSED_LOOP, which has no offered rate at all — its load is a
+    #: consequence of how fast the server happens to be.
     request_rate_rps: float | None = Field(default=None, gt=0)
+    #: Worker-pool size. Set only for CLOSED_LOOP, where it *is* the control
+    #: parameter, and the reason that generator cannot be described by a rate.
+    concurrency: PosInt | None = None
     length_source: LengthSource
     seed: int
     num_requests: PosInt
@@ -240,14 +245,39 @@ class WorkloadConfig(_Base):
     output_len_tokens: Stats
 
     @model_validator(mode="after")
-    def _rate_matches_process(self) -> WorkloadConfig:
+    def _control_parameter_matches_process(self) -> WorkloadConfig:
+        """Each arrival process is described by its own control parameter.
+
+        Recording an offered rate for a closed-loop run would be a fiction: that
+        generator has no rate to offer, only a pool size, and the achieved rate
+        is an *output*. Writing it into the field named for offered load is
+        exactly the conflation this repository exists to argue against, so the
+        schema refuses it.
+        """
         if self.arrival_process is ArrivalProcess.TRACE_REPLAY:
             if self.request_rate_rps is not None:
                 msg = "trace-replay derives arrivals from the trace; request_rate_rps must be None"
                 raise ValueError(msg)
-        elif self.request_rate_rps is None:
-            msg = f"{self.arrival_process} requires an explicit request_rate_rps"
-            raise ValueError(msg)
+            if self.concurrency is not None:
+                msg = "trace-replay is open-loop; concurrency must be None"
+                raise ValueError(msg)
+        elif self.arrival_process is ArrivalProcess.CLOSED_LOOP:
+            if self.request_rate_rps is not None:
+                msg = (
+                    "closed-loop has no offered rate — its load is a consequence of server "
+                    "speed. Record concurrency instead; request_rate_rps must be None"
+                )
+                raise ValueError(msg)
+            if self.concurrency is None:
+                msg = "closed-loop requires an explicit concurrency"
+                raise ValueError(msg)
+        else:
+            if self.request_rate_rps is None:
+                msg = f"{self.arrival_process} requires an explicit request_rate_rps"
+                raise ValueError(msg)
+            if self.concurrency is not None:
+                msg = f"{self.arrival_process} is open-loop; concurrency must be None"
+                raise ValueError(msg)
         return self
 
 

@@ -37,7 +37,7 @@ class TestSchemaVersion:
         If this fails, confirm the change is intentional, update the constant
         here, and note the migration in METHODOLOGY.md.
         """
-        assert SCHEMA_VERSION == "1.1.0"
+        assert SCHEMA_VERSION == "1.2.0"
 
     def test_stamped_on_records(self, run_result: RunResult) -> None:
         assert run_result.schema_version == SCHEMA_VERSION

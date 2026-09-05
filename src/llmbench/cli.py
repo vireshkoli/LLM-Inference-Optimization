@@ -322,3 +322,39 @@ def report(
     written = write_summary_json(runs, out / "docs" / "results.json", price)
     for path in [*paths, written]:
         console.print(f"  wrote {path}")
+
+
+@app.command()
+def methodology(
+    config: Annotated[Path, typer.Option(help="Sweep matrix")] = Path("configs/sweep.yaml"),
+    gpu: Annotated[int, typer.Option(help="Physical GPU index")] = 1,
+    results: Annotated[Path, typer.Option(help="Where to write results")] = Path("results/runs"),
+    trace: Annotated[Path, typer.Option(help="Azure trace CSV")] = Path("data/azure_trace.csv"),
+    matched_rate: Annotated[
+        float, typer.Option(help="Poisson rate the exhibits are compared against")
+    ] = 4.0,
+    concurrency: Annotated[int, typer.Option(help="Closed-loop worker pool")] = 64,
+    runs_only: Annotated[str, typer.Option(help="Comma-separated methodology run ids")] = "",
+    require_locked_clocks: Annotated[bool, typer.Option(help="Refuse to run unlocked")] = False,
+) -> None:
+    """Run the exhibits and controls that test the methodology itself.
+
+    These do not rank configurations and never appear on the frontier: a trace
+    replay and a closed-loop run both carry no offered rate, which is the field
+    every aggregation keys on.
+    """
+    runner = SweepRunner(
+        load_sweep_config(config),
+        gpu_index=gpu,
+        results_dir=results,
+        configs_dir=config.parent,
+        require_locked_clocks=require_locked_clocks,
+    )
+    selected = [r.strip() for r in runs_only.split(",") if r.strip()]
+    written = runner.run_methodology(
+        trace_path=trace,
+        matched_rate_rps=matched_rate,
+        closed_loop_concurrency=concurrency,
+        run_ids=selected or None,
+    )
+    console.print(f"\n[green]wrote {len(written)} result file(s)[/green] to {results}")
