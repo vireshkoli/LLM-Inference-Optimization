@@ -13,6 +13,7 @@ rather than typed.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Annotated
 
@@ -21,8 +22,15 @@ import yaml
 from rich.console import Console
 from rich.table import Table
 
+from llmbench.analysis.crossvalidate import (
+    compare_to_upstream,
+    load_upstream_result,
+    upstream_args,
+)
 from llmbench.analysis.plots import plot_latency_throughput, plot_pareto, plot_tpot_throughput
-from llmbench.config import load_sweep_config
+from llmbench.config import load_engine_profile, load_sweep_config
+from llmbench.engines.sglang import SglangEngine
+from llmbench.engines.vllm import VllmEngine
 from llmbench.report.render import (
     cost_note,
     latency_table,
@@ -35,7 +43,10 @@ from llmbench.report.render import (
     write_summary_json,
 )
 from llmbench.runner import SweepRunner
+from llmbench.schema import EngineName as _EngineName
 from llmbench.schema import RunResult
+
+_ENGINE_TYPES = {_EngineName.VLLM: VllmEngine, _EngineName.SGLANG: SglangEngine}
 
 app = typer.Typer(
     add_completion=False,
@@ -358,3 +369,138 @@ def methodology(
         run_ids=selected or None,
     )
     console.print(f"\n[green]wrote {len(written)} result file(s)[/green] to {results}")
+
+
+@app.command("crossvalidate")
+def cross_validate(
+    config: Annotated[Path, typer.Option(help="Sweep matrix")] = Path("configs/sweep.yaml"),
+    gpu: Annotated[int, typer.Option(help="Physical GPU index")] = 1,
+    config_id: Annotated[str, typer.Option(help="Configuration to cross-check")] = "vllm-bf16",
+    rate: Annotated[float, typer.Option(help="Offered rate to match")] = 4.0,
+    results: Annotated[Path, typer.Option(help="Directory of result JSON")] = Path("results/runs"),
+    dataset: Annotated[Path, typer.Option(help="ShareGPT corpus")] = Path("data/sharegpt_v3.json"),
+    out: Annotated[Path, typer.Option(help="Where to write the comparison")] = Path(
+        "results/crossvalidation.json"
+    ),
+) -> None:
+    """Measure one configuration with vLLM's own harness and compare.
+
+    Every other correctness check here is self-referential — our percentiles
+    against numpy, our arrivals against a KS test. This is the only one that
+    runs a *different implementation* against the same live server, which is the
+    difference between "our tests pass" and "an independent harness agrees".
+
+    The upstream benchmark runs inside the engine's own pinned container, so
+    there is no second environment to install or explain.
+    """
+    sweep = load_sweep_config(config)
+    runner = SweepRunner(
+        sweep,
+        gpu_index=gpu,
+        results_dir=results,
+        configs_dir=config.parent,
+        dataset_path=dataset,
+    )
+    entry = sweep.configuration(config_id)
+    profile = load_engine_profile(entry.engine, config.parent)
+    engine = _ENGINE_TYPES[entry.engine]()
+    spec = runner._launch_spec(config_id, profile)
+
+    point = runner.rate_point(rate)
+    n_prompts = len(point.specs) - sweep.defaults.warmup_requests
+
+    console.print(f"[bold]{config_id}[/bold] @ {rate:g} rps, {n_prompts} prompts")
+    console.print("  starting engine...")
+    handle = engine.start(spec)
+    console.print(f"  ready (kernel={handle.selected_kernel})")
+
+    try:
+        argv = upstream_args(
+            model=handle.spec.model_hf_id,
+            dataset_path="/data/sharegpt_v3.json",
+            num_prompts=n_prompts,
+            request_rate=rate,
+            seed=sweep.workload.seed,
+            port=spec.port,
+            result_dir="/out",
+            result_filename="upstream.json",
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        console.print(f"  running upstream: {' '.join(argv)}")
+        proc = subprocess.run(
+            [
+                "sudo",
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "host",
+                "-v",
+                f"{dataset.resolve()}:/data/sharegpt_v3.json:ro",
+                "-v",
+                f"{out.parent.resolve()}:/out",
+                "-v",
+                f"{spec.hf_cache_dir}:/root/.cache/huggingface:ro",
+                "--entrypoint",
+                "bash",
+                f"{spec.image}@{spec.image_digest}",
+                "-c",
+                " ".join(argv),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=3600,
+        )
+        if proc.returncode != 0:
+            console.print(f"[red]upstream benchmark failed[/red]\n{proc.stdout[-2000:]}")
+            console.print(proc.stderr[-2000:])
+            raise typer.Exit(code=1)
+    finally:
+        engine.stop(spec)
+        console.print("  engine stopped")
+
+    upstream = load_upstream_result(out.parent / "upstream.json")
+    agreements = compare_to_upstream(
+        _load_runs(results), upstream, config_id=config_id, rate_rps=rate
+    )
+    if not agreements:
+        console.print("[yellow]no matching runs of ours to compare against[/yellow]")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"Cross-validation — {config_id} @ {rate:g} rps")
+    for col in ("Metric", "This harness", "vllm bench serve", "Δ", "Agrees"):
+        table.add_column(col, justify="right" if col != "Metric" else "left")
+    for a in agreements:
+        table.add_row(
+            a.metric,
+            f"{a.ours:.2f} {a.unit}",
+            f"{a.upstream:.2f} {a.unit}",
+            f"{a.delta_pct:+.1f}%",
+            "yes" if a.agrees else "NO",
+        )
+    console.print(table)
+
+    out.write_text(
+        json.dumps(
+            {
+                "config_id": config_id,
+                "rate_rps": rate,
+                "metrics": [
+                    {
+                        "metric": a.metric,
+                        "ours": a.ours,
+                        "upstream": a.upstream,
+                        "unit": a.unit,
+                        "delta_pct": a.delta_pct,
+                        "agrees": a.agrees,
+                    }
+                    for a in agreements
+                ],
+                "all_agree": all(a.agrees for a in agreements),
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    console.print(f"  wrote {out}")

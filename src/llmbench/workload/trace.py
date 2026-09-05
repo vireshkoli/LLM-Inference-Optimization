@@ -1,11 +1,17 @@
 """Azure LLM inference trace — real production arrival timestamps.
 
 Poisson arrivals are the primary process in this repository, and they are an
-*assumption*. Real traffic is burstier than a Poisson process of the same mean
-rate: requests arrive in correlated clumps, so the queue sees transient rates
-well above the average and the tail suffers accordingly. A benchmark that only
-ever offers Poisson load cannot say how much of its tail latency is an artifact
-of that choice.
+*assumption*. The usual expectation is that real traffic is burstier: requests
+arrive in correlated clumps, so the queue sees transient rates well above the
+average and the tail suffers accordingly. A benchmark that only ever offers
+Poisson load cannot say how much of its tail latency is an artifact of that
+choice.
+
+**Measured, that expectation does not hold for this trace.** At a 4 req/s
+window the published Azure conversation trace has a squared coefficient of
+variation of 1.02 against Poisson's 1.00 — it is very close to Poisson at the
+timescale this benchmark operates on. That is a result, not a disappointment:
+it is the difference between assuming the arrival model and having checked it.
 
 This module loads the Microsoft Azure LLM inference trace (``AzurePublicDataset``)
 and extracts the two things a replay needs: **when** each request arrived, and
@@ -78,13 +84,18 @@ class TraceWindow:
 
     @property
     def burstiness(self) -> float:
-        """Index of dispersion for the inter-arrival times (variance / mean).
+        """Squared coefficient of variation of the inter-arrival times.
 
-        For a Poisson process the inter-arrival times are Exponential, whose
-        standard deviation equals its mean, so this ratio is 1.0. A value above
-        1 means the trace is *more* bursty than Poisson at the same average rate
-        — which is the entire reason the replay exists, and is a number the
-        reader can check rather than take on trust.
+        ``variance / mean**2``. For a Poisson process the inter-arrival times
+        are Exponential, whose standard deviation equals its mean, so this is
+        1.0 — **at any rate**. Above 1 the trace is burstier than Poisson;
+        below 1 it is more regular.
+
+        Dividing by the mean *squared* rather than the mean is what makes the
+        1.0 reference meaningful. ``variance / mean`` is not dimensionless: for
+        an Exponential distribution it equals the mean itself, so it reads 1.0
+        only at exactly 1 req/s and 0.25 at 4 req/s, and a trace would appear to
+        get less bursty purely by arriving faster.
         """
         gaps = [
             b.arrival_s - a.arrival_s
@@ -93,7 +104,7 @@ class TraceWindow:
         if len(gaps) < 2:
             return 0.0
         mean = statistics.fmean(gaps)
-        return statistics.variance(gaps) / mean if mean > 0 else 0.0
+        return statistics.variance(gaps) / (mean**2) if mean > 0 else 0.0
 
     @property
     def timestamps_s(self) -> tuple[float, ...]:

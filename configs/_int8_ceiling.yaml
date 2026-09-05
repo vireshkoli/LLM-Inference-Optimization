@@ -1,12 +1,12 @@
-# =============================================================================
-# THE sweep matrix. Adding or removing a configuration must never require
-# editing benchmark code — if it does, that is a bug in the harness.
+# Generated companion to sweep.yaml: the rates above the main ladder, applied to
+# vllm-int8-w8a8 alone.
 #
-# Hardware target: NVIDIA A40 (GA102, compute capability 8.6, 46 GB, 696 GB/s).
-#
-# Checkpoint revisions are pinned to resolved commit SHAs, not branch names.
-# "main" is not reproducible.
-# =============================================================================
+# Every other configuration is oversubscribed at 8 rps. INT8-W8A8 is not — it
+# holds TTFT p95 459 ms and TPOT p95 66.7 ms there — so the full sweep never
+# found its capacity, and the report's headline finding ("the winning format
+# inverts at the knee") had no upper bound on the winner. These rates give it
+# one. They are pointless for the other configurations, which is why this is a
+# separate file rather than a wider ladder.
 schema_version: "1.0.0"
 
 model:
@@ -46,7 +46,7 @@ workload:
   # ladder and the headline finding has an open end. These rates close it.
   # They are wasted on the other configurations and are applied to int8 alone
   # via --configs-only.
-  request_rates_rps: [1, 2, 4, 5, 6, 7, 8, 12]
+  request_rates_rps: [9, 10, 11]
 
 # -----------------------------------------------------------------------------
 # Quantization levels.

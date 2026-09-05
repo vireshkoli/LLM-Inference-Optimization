@@ -61,6 +61,15 @@ data/wikitext2_test.parquet:
 	  "https://huggingface.co/datasets/Salesforce/wikitext/resolve/main/wikitext-2-raw-v1/test-00000-of-00001.parquet" \
 	  -o $@
 
+.PHONY: data-trace
+data-trace: data/azure_trace.csv  ## Fetch the Azure LLM inference trace (~700 KB, gitignored)
+
+data/azure_trace.csv:
+	@mkdir -p data
+	curl -L --fail --progress-bar \
+	  "https://raw.githubusercontent.com/Azure/AzurePublicDataset/master/data/AzureLLMInferenceTrace_conv.csv" \
+	  -o $@
+
 .PHONY: lmeval-env
 lmeval-env: .venv-lmeval/bin/python  ## Build the isolated lm-eval environment
 
@@ -99,6 +108,15 @@ show:  ## Summarise results already on disk
 .PHONY: quality
 quality: data-quality lmeval-env  ## Perplexity + GSM8K + IFEval across quantization levels
 	uv run llmbench quality --config configs/sweep.yaml --gpu $(BENCH_GPU)
+
+.PHONY: methodology
+methodology: data data-trace  ## Trace replay, closed-loop exhibit and drift canary (~4 GPU-hours)
+	uv run llmbench methodology --config configs/sweep.yaml --gpu $(BENCH_GPU) \
+	  --require-locked-clocks
+
+.PHONY: crossvalidate
+crossvalidate: data  ## Cross-check one config against vLLM's own harness (~0.5 GPU-hours)
+	uv run llmbench crossvalidate --config configs/sweep.yaml --gpu $(BENCH_GPU)
 
 .PHONY: report
 report:  ## Regenerate every chart and table in README/REPORT from results JSON

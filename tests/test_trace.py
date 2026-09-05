@@ -8,6 +8,8 @@ offered rate.
 
 from __future__ import annotations
 
+import random
+import statistics
 from pathlib import Path
 
 import pytest
@@ -126,9 +128,19 @@ class TestWindowSelection:
 
 
 class TestBurstiness:
+    def test_poisson_arrivals_score_one_at_any_rate(self) -> None:
+        """The reference point the metric exists to provide. Exponential gaps
+        must score 1.0 whether they arrive at 1 or 16 per second — a metric that
+        moved with the rate would make a fast trace look regular."""
+        for rate in (1.0, 4.0, 16.0):
+            rng = random.Random(11)
+            gaps = [rng.expovariate(rate) for _ in range(20000)]
+            mean = statistics.fmean(gaps)
+            assert statistics.variance(gaps) / mean**2 == pytest.approx(1.0, abs=0.05)
+
     def test_regular_arrivals_score_near_zero(self, tmp_path: Path) -> None:
         """Perfectly regular arrivals have zero inter-arrival variance, so the
-        index of dispersion is 0 — far below Poisson's 1.0."""
+        score is 0 — far below Poisson's 1.0."""
         rows = load_azure_trace(write_trace(tmp_path / "t.csv", steady(200, gap=0.5)))
         assert select_window(rows, duration_s=20.0).burstiness == pytest.approx(0.0, abs=1e-9)
 
