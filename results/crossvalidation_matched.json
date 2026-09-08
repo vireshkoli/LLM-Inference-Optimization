@@ -1,0 +1,70 @@
+{
+  "config_id": "vllm-bf16",
+  "rate_rps": 4.0,
+  "matched_lengths": true,
+  "fixed_input_tokens": 256,
+  "fixed_output_tokens": 256,
+  "output_tokens_per_request": {
+    "ours": 256.0,
+    "upstream": 256.0,
+    "ratio": 1.0
+  },
+  "metrics": [
+    {
+      "metric": "TTFT mean",
+      "ours": 174.32043014689245,
+      "upstream": 168.37954104024297,
+      "unit": "ms",
+      "delta_pct": 3.5282725383065427,
+      "agrees": true,
+      "length_sensitive": false
+    },
+    {
+      "metric": "TTFT p99",
+      "ours": 273.2379172742366,
+      "upstream": 260.4979646764694,
+      "unit": "ms",
+      "delta_pct": 4.890615024032852,
+      "agrees": true,
+      "length_sensitive": false
+    },
+    {
+      "metric": "TPOT mean",
+      "ours": 40.61727113776266,
+      "upstream": 41.71503447062155,
+      "unit": "ms",
+      "delta_pct": -2.6315771922279296,
+      "agrees": true,
+      "length_sensitive": false
+    },
+    {
+      "metric": "TPOT p99",
+      "ours": 45.18177687205081,
+      "upstream": 45.8961906809652,
+      "unit": "ms",
+      "delta_pct": -1.556586283773398,
+      "agrees": true,
+      "length_sensitive": false
+    },
+    {
+      "metric": "E2E mean",
+      "ours": 10531.72457027637,
+      "upstream": 10805.713331048739,
+      "unit": "ms",
+      "delta_pct": -2.5355916113848687,
+      "agrees": true,
+      "length_sensitive": true
+    },
+    {
+      "metric": "Output throughput",
+      "ours": 927.6439390306848,
+      "upstream": 977.334172766586,
+      "unit": "tok/s",
+      "delta_pct": -5.084262386450755,
+      "agrees": false,
+      "length_sensitive": true
+    }
+  ],
+  "all_agree": false,
+  "length_independent_agree": true
+}

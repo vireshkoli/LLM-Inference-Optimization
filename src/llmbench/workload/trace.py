@@ -37,7 +37,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-__all__ = ["TraceRequest", "TraceWindow", "load_azure_trace", "select_window"]
+__all__ = [
+    "TraceRequest",
+    "TraceWindow",
+    "load_azure_trace",
+    "select_window",
+    "select_windows",
+]
 
 #: Column names in the published Azure trace CSVs. Both the conversation and
 #: the code variants use these, which is why the loader accepts either file.
@@ -279,3 +285,62 @@ def select_window(
             raise ValueError(msg)
 
     return result
+
+
+def select_windows(
+    requests: Sequence[TraceRequest],
+    *,
+    duration_s: float,
+    count: int,
+    target_rate_rps: float,
+    tolerance: float = 0.15,
+) -> list[TraceWindow]:
+    """Pick several **non-overlapping** windows at a matched mean rate.
+
+    One window is one realization of the arrival process, and repeating a
+    measurement against it does not sample the process — it re-measures the same
+    arrival sequence and reports only the server's own variability. Attributing
+    a latency difference to *burstiness* rather than to one particular stretch
+    of traffic therefore needs several independent windows, exactly as the
+    Poisson side needs several seeds.
+
+    Windows are non-overlapping so they are genuinely independent draws; sliding
+    a window forward by a few seconds would produce near-identical arrival
+    sequences and a falsely tight spread.
+
+    Raises:
+        ValueError: If the trace cannot supply ``count`` windows within
+            ``tolerance`` of the target rate.
+    """
+    if count < 1:
+        msg = f"count must be at least 1, got {count}"
+        raise ValueError(msg)
+
+    windows: list[TraceWindow] = []
+    cursor = 0.0
+    span = requests[-1].arrival_s if requests else 0.0
+
+    while len(windows) < count and cursor + duration_s <= span:
+        remaining = [r for r in requests if r.arrival_s >= cursor]
+        try:
+            window = select_window(
+                remaining,
+                duration_s=duration_s,
+                target_rate_rps=target_rate_rps,
+                tolerance=tolerance,
+            )
+        except ValueError:
+            break
+        windows.append(window)
+        # Advance past the window just taken, plus its own span, so the next
+        # candidate cannot overlap it.
+        first_abs = next(r.arrival_s for r in requests if r.arrival_s >= cursor)
+        cursor = first_abs + duration_s
+
+    if len(windows) < count:
+        msg = (
+            f"trace supplied only {len(windows)} non-overlapping window(s) of {duration_s:.0f}s "
+            f"within {tolerance:.0%} of {target_rate_rps:g} rps; {count} were requested"
+        )
+        raise ValueError(msg)
+    return windows

@@ -50,6 +50,16 @@ class ProcessComparison:
     baseline_ttft_p95_ms: float
     baseline_ttft_p99_ms: float
     runs: int
+    #: Repeat-to-repeat spread on each side. Without these the comparison is a
+    #: difference of two means with no way to tell it from noise — and a tail
+    #: percentile is a high-variance statistic, so that distinction is not
+    #: academic. Measured here: the trace replay's p99 sat 56 ms above the
+    #: Poisson baseline against a pooled standard error of 57 ms, while the
+    #: baseline's own two measurements of the identical configuration differed
+    #: by 118 ms.
+    ttft_p99_std_ms: float = 0.0
+    baseline_ttft_p99_std_ms: float = 0.0
+    baseline_runs: int = 0
 
     @property
     def throughput_ratio(self) -> float:
@@ -65,6 +75,26 @@ class ProcessComparison:
         """
         return abs(self.throughput_ratio - 1.0) <= 0.10
 
+    @property
+    def p99_pooled_stderr_ms(self) -> float:
+        """Standard error of the difference between the two p99 means."""
+        n, m = max(self.runs, 1), max(self.baseline_runs, 1)
+        variance = (self.ttft_p99_std_ms**2 / n) + (self.baseline_ttft_p99_std_ms**2 / m)
+        return float(variance**0.5)
+
+    @property
+    def p99_significant(self) -> bool:
+        """Whether the p99 difference exceeds two standard errors.
+
+        A comparison that fails this has found nothing, and reporting its ratio
+        as an effect would be publishing noise — which is precisely the error
+        class this repository exists to avoid.
+        """
+        err = self.p99_pooled_stderr_ms
+        if err <= 0:
+            return abs(self.ttft_p99_ms - self.baseline_ttft_p99_ms) > 1e-9
+        return abs(self.ttft_p99_ms - self.baseline_ttft_p99_ms) > 2.0 * err
+
     def understatement_ratio(self, percentile: str = "p99") -> float:
         """How many times *smaller* this process reports the tail.
 
@@ -77,12 +107,14 @@ class ProcessComparison:
         return base / mine if mine else 0.0
 
 
-def _aggregate_ttft(runs: Sequence[RunResult]) -> tuple[float, float, float, float]:
-    """Mean TTFT p50/p95/p99 and output-token throughput across repeats."""
+def _aggregate_ttft(runs: Sequence[RunResult]) -> tuple[float, float, float, float, float]:
+    """Mean TTFT p50/p95/p99, p99 spread, and throughput across repeats."""
+    p99 = summarize([r.ttft_s.p99 for r in runs])
     return (
         summarize([r.ttft_s.p50 for r in runs]).mean * 1e3,
         summarize([r.ttft_s.p95 for r in runs]).mean * 1e3,
-        summarize([r.ttft_s.p99 for r in runs]).mean * 1e3,
+        p99.mean * 1e3,
+        p99.std * 1e3,
         summarize([r.output_token_throughput for r in runs]).mean,
     )
 
@@ -114,8 +146,8 @@ def process_comparison(
     if not subject or not baseline:
         return None
 
-    p50, p95, p99, throughput = _aggregate_ttft(subject)
-    b50, b95, b99, b_throughput = _aggregate_ttft(baseline)
+    p50, p95, p99, p99_std, throughput = _aggregate_ttft(subject)
+    b50, b95, b99, b99_std, b_throughput = _aggregate_ttft(baseline)
 
     return ProcessComparison(
         label=label or process.value,
@@ -129,6 +161,9 @@ def process_comparison(
         baseline_ttft_p95_ms=b95,
         baseline_ttft_p99_ms=b99,
         runs=len(subject),
+        ttft_p99_std_ms=p99_std,
+        baseline_ttft_p99_std_ms=b99_std,
+        baseline_runs=len(baseline),
     )
 
 

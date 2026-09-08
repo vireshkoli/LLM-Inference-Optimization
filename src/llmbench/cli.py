@@ -613,3 +613,72 @@ def cross_validate(
         + "\n"
     )
     console.print(f"  wrote {out}")
+
+
+@app.command("arrival-study")
+def arrival_study(
+    config: Annotated[Path, typer.Option(help="Sweep matrix")] = Path("configs/sweep.yaml"),
+    gpu: Annotated[int, typer.Option(help="Physical GPU index")] = 1,
+    config_id: Annotated[str, typer.Option(help="Configuration to measure on")] = "vllm-bf16",
+    rate: Annotated[float, typer.Option(help="Matched mean rate")] = 4.0,
+    realizations: Annotated[int, typer.Option(help="Independent draws per process")] = 5,
+    trace: Annotated[Path, typer.Option(help="Azure trace CSV")] = Path("data/azure_trace.csv"),
+    results: Annotated[Path, typer.Option(help="Where to write results")] = Path("results/runs"),
+    require_locked_clocks: Annotated[bool, typer.Option(help="Refuse to run unlocked")] = False,
+) -> None:
+    """Does the arrival *process* change tail latency, or just this draw of it?
+
+    Repeating a run against one seeded schedule measures the server's
+    variability, not the arrival process's — both sides come out tight and
+    different, and the difference belongs to those two particular arrival
+    sequences rather than to Poisson and the trace. This measures several
+    independent draws of each at a matched mean rate, with an identical prompt
+    list, so arrival timing is the only thing that varies.
+    """
+    sweep = load_sweep_config(config)
+    runner = SweepRunner(
+        sweep,
+        gpu_index=gpu,
+        results_dir=results,
+        configs_dir=config.parent,
+        require_locked_clocks=require_locked_clocks,
+    )
+    entry = sweep.configuration(config_id)
+    profile = load_engine_profile(entry.engine, config.parent)
+    engine = _ENGINE_TYPES[entry.engine]()
+    spec = runner._launch_spec(config_id, profile)
+
+    poisson, trace_points = runner.arrival_realizations(rate, trace_path=trace, count=realizations)
+    preflight = run_preflight(
+        gpu,
+        results_path=str(results),
+        gpu_memory_utilization=sweep.defaults.gpu_memory_utilization,
+        require_locked_clocks=require_locked_clocks,
+    )
+    for warning in preflight.warnings:
+        console.print(f"  [preflight] {warning}")
+
+    console.print(f"[bold]{config_id}[/bold] — {realizations} draws per process @ {rate:g} rps")
+    console.print("  starting engine...")
+    handle = engine.start(spec)
+    console.print(f"  ready (kernel={handle.selected_kernel})")
+
+    written: list[Path] = []
+    try:
+        # Interleaved rather than grouped: if the machine drifts during the
+        # study, grouping would load the whole drift onto one process and
+        # manufacture a difference between them.
+        for k, (p_point, t_point) in enumerate(zip(poisson, trace_points, strict=True)):
+            for point in (p_point, t_point):
+                run = runner.measure(handle, point, k, preflight)
+                written.append(runner._write(run, label=point.label))
+                console.print(
+                    f"  {point.label}: TTFT p95 {run.ttft_s.p95 * 1e3:7.1f} ms | "
+                    f"p99 {run.ttft_s.p99 * 1e3:7.1f} ms | "
+                    f"{run.output_token_throughput:7.1f} tok/s | {run.validity.value}"
+                )
+    finally:
+        engine.stop(spec)
+        console.print("  engine stopped")
+
+    console.print(f"\n[green]wrote {len(written)} result file(s)[/green] to {results}")

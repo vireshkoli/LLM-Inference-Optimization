@@ -288,6 +288,75 @@ class SweepRunner:
             length_source=LengthSource.FIXED,
         )
 
+    def arrival_realizations(
+        self, rate_rps: float, *, trace_path: Path, count: int
+    ) -> tuple[list[RatePoint], list[RatePoint]]:
+        """``count`` independent Poisson draws and ``count`` trace windows.
+
+        The reason this exists rather than repeating one schedule: the arrival
+        schedule is seeded and identical across repeats, so repeating a run
+        measures the *server's* variability and not the arrival process's. Three
+        repeats against one Poisson draw and one trace window produce two tight
+        distributions that differ — and the difference is attributable to those
+        two particular arrival sequences, not to the processes that generated
+        them. Comparing processes needs several draws from each.
+
+        Every realization uses the identical length distribution and prompt
+        list, so the only thing varying is arrival timing.
+        """
+        from llmbench.workload.trace import load_azure_trace, select_windows  # noqa: PLC0415
+
+        corpus = self._load_corpus()
+        tokenizer = load_tokenizer(
+            self.config.model.hf_id, self.config.model.revision, self.hf_cache_dir
+        )
+        defaults = self.config.defaults
+        seed = self.config.workload.seed
+        total = (
+            num_requests_for_duration(rate_rps, defaults.measurement_duration_s)
+            + defaults.warmup_requests
+        )
+
+        sampler = EmpiricalLengthSampler(pairs=corpus.pairs)
+        pairs = clamp_to_context(sampler.sample(total, seed=seed), self.config.model.max_model_len)
+        specs = build_requests(pairs, corpus.corpus_token_ids, tokenizer, seed=seed)
+
+        poisson = [
+            RatePoint(
+                rate_rps=rate_rps,
+                # A different seed per realization is the whole point: same
+                # process, independent draw.
+                schedule=poisson_schedule(rate_rps=rate_rps, num_requests=total, seed=seed + k),
+                specs=specs,
+                label=f"arrival-poisson-r{k}",
+            )
+            for k in range(count)
+        ]
+
+        windows = select_windows(
+            load_azure_trace(trace_path),
+            duration_s=defaults.measurement_duration_s,
+            count=count,
+            target_rate_rps=rate_rps,
+        )
+        trace = [
+            RatePoint(
+                rate_rps=None,
+                schedule=trace_schedule(w.timestamps_s),
+                specs=specs[: len(w)],
+                arrival_process=ArrivalProcess.TRACE_REPLAY,
+                length_source=LengthSource.AZURE_TRACE,
+                label=f"arrival-trace-r{k}",
+            )
+            for k, w in enumerate(windows)
+        ]
+        for k, w in enumerate(windows):
+            print(
+                f"  [trace window {k}] {len(w)} arrivals, {w.mean_rate_rps:.2f} rps, "
+                f"CV^2 {w.burstiness:.2f}"
+            )
+        return poisson, trace
+
     def trace_point(self, *, target_rate_rps: float, trace_path: Path) -> RatePoint:
         """Build a replay of recorded production arrivals.
 

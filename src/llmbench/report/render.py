@@ -350,9 +350,18 @@ def methodology_table(
             )
             baseline_shown = True
         ratio = cmp.understatement_ratio("p99")
-        verdict = f"{ratio:.2f}x {'understated' if ratio > 1 else 'worse'}"
         if not cmp.comparable:
-            verdict += f" (throughput {cmp.throughput_ratio:.0%} of baseline — not comparable)"
+            verdict = (
+                f"not comparable — throughput {cmp.throughput_ratio:.0%} of baseline, "
+                f"so this measures the load, not the generator"
+            )
+        elif not cmp.p99_significant:
+            verdict = (
+                f"indistinguishable ({cmp.ttft_p99_ms - cmp.baseline_ttft_p99_ms:+.0f} ms "
+                f"against ±{2 * cmp.p99_pooled_stderr_ms:.0f} ms)"
+            )
+        else:
+            verdict = f"{ratio:.2f}x {'understated' if ratio > 1 else 'worse'}"
         lines.append(
             f"| {cmp.label} | {cmp.ttft_p50_ms:.0f} ms | {cmp.ttft_p95_ms:.0f} ms "
             f"| {cmp.ttft_p99_ms:.0f} ms | {cmp.throughput:.0f} tok/s | {verdict} |"
