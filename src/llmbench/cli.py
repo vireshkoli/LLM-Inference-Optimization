@@ -23,12 +23,14 @@ from rich.console import Console
 from rich.table import Table
 
 from llmbench.analysis.crossvalidate import (
+    MetricAgreement,
     compare_to_upstream,
     load_upstream_result,
     upstream_args,
 )
 from llmbench.analysis.plots import plot_latency_throughput, plot_pareto, plot_tpot_throughput
 from llmbench.config import load_engine_profile, load_sweep_config
+from llmbench.engines.preflight import run_preflight
 from llmbench.engines.sglang import SglangEngine
 from llmbench.engines.vllm import VllmEngine
 from llmbench.report.render import (
@@ -382,6 +384,76 @@ def methodology(
     console.print(f"\n[green]wrote {len(written)} result file(s)[/green] to {results}")
 
 
+def _run_upstream_benchmark(
+    *,
+    argv: list[str],
+    dataset: Path,
+    out_dir: Path,
+    hf_cache: Path,
+    image_ref: str,
+) -> None:
+    """Run vLLM's harness in the engine's own image against the live server."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(
+        [
+            "sudo",
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "host",
+            "-v",
+            f"{dataset.resolve()}:/data/sharegpt_v3.json:ro",
+            "-v",
+            f"{out_dir.resolve()}:/out",
+            "-v",
+            f"{hf_cache}:/root/.cache/huggingface:ro",
+            "--entrypoint",
+            "bash",
+            image_ref,
+            "-c",
+            " ".join(argv),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=3600,
+    )
+    if proc.returncode != 0:
+        console.print(f"[red]upstream benchmark failed[/red]\n{proc.stdout[-2000:]}")
+        console.print(proc.stderr[-2000:])
+        raise typer.Exit(code=1)
+
+
+def _render_crossvalidation(
+    agreements: list[MetricAgreement],
+    *,
+    title: str,
+    ours_out_len: float,
+    up_out_len: float,
+    fixed: bool,
+) -> None:
+    table = Table(title=title)
+    for col in ("Metric", "This harness", "vllm bench serve", "Δ", "Agrees"):
+        table.add_column(col, justify="right" if col != "Metric" else "left")
+    for a in agreements:
+        note = "yes" if a.agrees else ("NO*" if a.length_sensitive else "NO")
+        table.add_row(
+            a.metric,
+            f"{a.ours:.2f} {a.unit}",
+            f"{a.upstream:.2f} {a.unit}",
+            f"{a.delta_pct:+.1f}%",
+            note,
+        )
+    console.print(table)
+    console.print(
+        f"  output tokens/request: ours {ours_out_len:.1f}, upstream {up_out_len:.1f} "
+        f"(ratio {ours_out_len / up_out_len:.3f})"
+    )
+    if not fixed:
+        console.print("  * length-sensitive: a workload difference alone moves this metric.")
+
+
 @app.command("crossvalidate")
 def cross_validate(
     config: Annotated[Path, typer.Option(help="Sweep matrix")] = Path("configs/sweep.yaml"),
@@ -393,6 +465,10 @@ def cross_validate(
     out: Annotated[Path, typer.Option(help="Where to write the comparison")] = Path(
         "results/crossvalidation.json"
     ),
+    fixed_input: Annotated[
+        int, typer.Option(help="Constant input tokens on both sides (0 = sample ShareGPT)")
+    ] = 0,
+    fixed_output: Annotated[int, typer.Option(help="Constant output tokens on both sides")] = 0,
 ) -> None:
     """Measure one configuration with vLLM's own harness and compare.
 
@@ -403,6 +479,14 @@ def cross_validate(
 
     The upstream benchmark runs inside the engine's own pinned container, so
     there is no second environment to install or explain.
+
+    With ``--fixed-input``/``--fixed-output`` both harnesses are put on constant
+    lengths and ours is measured in the same engine lifetime. That matters
+    because the two sample ShareGPT differently — measured, ours drew 303 output
+    tokens per request against upstream's 192 from the same corpus — so
+    throughput and end-to-end latency differ by the length ratio however correct
+    both harnesses are. Fixing the lengths removes the workload from the
+    comparison and leaves only the code.
     """
     sweep = load_sweep_config(config)
     runner = SweepRunner(
@@ -417,15 +501,41 @@ def cross_validate(
     engine = _ENGINE_TYPES[entry.engine]()
     spec = runner._launch_spec(config_id, profile)
 
-    point = runner.rate_point(rate)
+    fixed = (fixed_input, fixed_output) if fixed_input and fixed_output else None
+    point = (
+        runner.fixed_length_point(rate, input_tokens=fixed[0], output_tokens=fixed[1])
+        if fixed
+        else runner.rate_point(rate)
+    )
     n_prompts = len(point.specs) - sweep.defaults.warmup_requests
 
-    console.print(f"[bold]{config_id}[/bold] @ {rate:g} rps, {n_prompts} prompts")
+    # Before the engine starts: taken afterwards it would fail on free VRAM the
+    # engine is legitimately holding.
+    preflight = run_preflight(
+        gpu,
+        results_path=str(results),
+        gpu_memory_utilization=sweep.defaults.gpu_memory_utilization,
+    )
+    for warning in preflight.warnings:
+        console.print(f"  [preflight] {warning}")
+
+    label = f"fixed {fixed[0]}/{fixed[1]} tokens" if fixed else "ShareGPT lengths"
+    console.print(f"[bold]{config_id}[/bold] @ {rate:g} rps, {n_prompts} prompts, {label}")
     console.print("  starting engine...")
     handle = engine.start(spec)
     console.print(f"  ready (kernel={handle.selected_kernel})")
 
+    upstream_name = f"{out.stem}.upstream.json"
     try:
+        ours: list[RunResult] = []
+        if fixed:
+            console.print("  measuring with this harness...")
+            ours = [runner.measure(handle, point, 0, preflight)]
+            console.print(
+                f"    TTFT mean {ours[0].ttft_s.mean * 1e3:.2f} ms | "
+                f"{ours[0].output_token_throughput:.1f} tok/s"
+            )
+
         argv = upstream_args(
             model=handle.spec.model_hf_id,
             dataset_path="/data/sharegpt_v3.json",
@@ -434,69 +544,53 @@ def cross_validate(
             seed=sweep.workload.seed,
             port=spec.port,
             result_dir="/out",
-            result_filename="upstream.json",
+            result_filename=upstream_name,
+            fixed_lengths=fixed,
         )
-        out.parent.mkdir(parents=True, exist_ok=True)
-        console.print(f"  running upstream: {' '.join(argv)}")
-        proc = subprocess.run(
-            [
-                "sudo",
-                "docker",
-                "run",
-                "--rm",
-                "--network",
-                "host",
-                "-v",
-                f"{dataset.resolve()}:/data/sharegpt_v3.json:ro",
-                "-v",
-                f"{out.parent.resolve()}:/out",
-                "-v",
-                f"{spec.hf_cache_dir}:/root/.cache/huggingface:ro",
-                "--entrypoint",
-                "bash",
-                f"{spec.image}@{spec.image_digest}",
-                "-c",
-                " ".join(argv),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=3600,
+        console.print("  running upstream harness...")
+        _run_upstream_benchmark(
+            argv=argv,
+            dataset=dataset,
+            out_dir=out.parent,
+            hf_cache=spec.hf_cache_dir,
+            image_ref=f"{spec.image}@{spec.image_digest}",
         )
-        if proc.returncode != 0:
-            console.print(f"[red]upstream benchmark failed[/red]\n{proc.stdout[-2000:]}")
-            console.print(proc.stderr[-2000:])
-            raise typer.Exit(code=1)
     finally:
         engine.stop(spec)
         console.print("  engine stopped")
 
-    upstream = load_upstream_result(out.parent / "upstream.json")
-    agreements = compare_to_upstream(
-        _load_runs(results), upstream, config_id=config_id, rate_rps=rate
-    )
+    upstream = load_upstream_result(out.parent / upstream_name)
+    if not ours:
+        ours = _load_runs(results)
+    agreements = compare_to_upstream(ours, upstream, config_id=config_id, rate_rps=rate)
     if not agreements:
         console.print("[yellow]no matching runs of ours to compare against[/yellow]")
         raise typer.Exit(code=1)
 
-    table = Table(title=f"Cross-validation — {config_id} @ {rate:g} rps")
-    for col in ("Metric", "This harness", "vllm bench serve", "Δ", "Agrees"):
-        table.add_column(col, justify="right" if col != "Metric" else "left")
-    for a in agreements:
-        table.add_row(
-            a.metric,
-            f"{a.ours:.2f} {a.unit}",
-            f"{a.upstream:.2f} {a.unit}",
-            f"{a.delta_pct:+.1f}%",
-            "yes" if a.agrees else "NO",
-        )
-    console.print(table)
+    ours_out_len = sum(r.workload.output_len_tokens.mean for r in ours) / len(ours)
+    up_out_len = upstream["total_output_tokens"] / upstream["completed"]
+
+    _render_crossvalidation(
+        agreements,
+        title=f"Cross-validation — {config_id} @ {rate:g} rps ({label})",
+        ours_out_len=ours_out_len,
+        up_out_len=up_out_len,
+        fixed=bool(fixed),
+    )
 
     out.write_text(
         json.dumps(
             {
                 "config_id": config_id,
                 "rate_rps": rate,
+                "matched_lengths": bool(fixed),
+                "fixed_input_tokens": fixed[0] if fixed else None,
+                "fixed_output_tokens": fixed[1] if fixed else None,
+                "output_tokens_per_request": {
+                    "ours": ours_out_len,
+                    "upstream": up_out_len,
+                    "ratio": ours_out_len / up_out_len,
+                },
                 "metrics": [
                     {
                         "metric": a.metric,
@@ -505,10 +599,14 @@ def cross_validate(
                         "unit": a.unit,
                         "delta_pct": a.delta_pct,
                         "agrees": a.agrees,
+                        "length_sensitive": a.length_sensitive,
                     }
                     for a in agreements
                 ],
                 "all_agree": all(a.agrees for a in agreements),
+                "length_independent_agree": all(
+                    a.agrees for a in agreements if not a.length_sensitive
+                ),
             },
             indent=2,
         )

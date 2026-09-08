@@ -47,6 +47,7 @@ def upstream_args(
     port: int,
     result_dir: str,
     result_filename: str,
+    fixed_lengths: tuple[int, int] | None = None,
 ) -> list[str]:
     """Argv for ``vllm bench serve``, matched to one of our rate points.
 
@@ -54,7 +55,27 @@ def upstream_args(
     makes the upstream arrival process Poisson, and therefore the same process
     ours generates. A silent default here would be the single easiest way to
     compare two different workloads and call the disagreement a bug.
+
+    Args:
+        fixed_lengths: ``(input_tokens, output_tokens)`` to switch upstream onto
+            its ``random`` dataset at constant lengths. Both harnesses sample
+            ShareGPT differently — measured, ours drew 303 output tokens per
+            request against upstream's 192 from the same corpus — so throughput
+            and end-to-end latency differ by the length ratio no matter how
+            correct both harnesses are. Fixing the lengths on both sides removes
+            the workload from the comparison and leaves only the code.
     """
+    if fixed_lengths is not None:
+        dataset = [
+            "--dataset-name",
+            "random",
+            "--input-len",
+            str(fixed_lengths[0]),
+            "--output-len",
+            str(fixed_lengths[1]),
+        ]
+    else:
+        dataset = ["--dataset-name", "sharegpt", "--dataset-path", dataset_path]
     return [
         "vllm",
         "bench",
@@ -69,10 +90,7 @@ def upstream_args(
         "/v1/completions",
         "--model",
         model,
-        "--dataset-name",
-        "sharegpt",
-        "--dataset-path",
-        dataset_path,
+        *dataset,
         "--num-prompts",
         str(num_prompts),
         "--request-rate",
@@ -95,6 +113,13 @@ def upstream_args(
     ]
 
 
+#: Metrics whose value depends on how many tokens each request generates.
+#: They cannot validate a harness unless both sides were given the same length
+#: distribution, because a correct harness measuring a longer workload reports a
+#: larger number and is not thereby wrong.
+LENGTH_SENSITIVE = frozenset({"E2E mean", "Output throughput"})
+
+
 @dataclass(frozen=True, slots=True)
 class MetricAgreement:
     """One metric, measured by both harnesses."""
@@ -103,6 +128,11 @@ class MetricAgreement:
     ours: float
     upstream: float
     unit: str = "ms"
+
+    @property
+    def length_sensitive(self) -> bool:
+        """Whether a workload difference alone can move this metric."""
+        return self.metric in LENGTH_SENSITIVE
 
     @property
     def delta_pct(self) -> float:

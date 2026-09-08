@@ -67,7 +67,11 @@ from llmbench.workload.arrivals import (
     trace_schedule,
 )
 from llmbench.workload.corpus import ShareGptCorpus, load_sharegpt
-from llmbench.workload.lengths import EmpiricalLengthSampler, clamp_to_context
+from llmbench.workload.lengths import (
+    EmpiricalLengthSampler,
+    FixedLengthSampler,
+    clamp_to_context,
+)
 from llmbench.workload.prompts import RequestSpec, build_requests
 from llmbench.workload.tokenizer import DEFAULT_HF_CACHE, load_tokenizer
 
@@ -246,6 +250,43 @@ class SweepRunner:
         point = RatePoint(rate_rps=rate_rps, schedule=schedule, specs=specs)
         self._rate_points[rate_rps] = point
         return point
+
+    def fixed_length_point(
+        self, rate_rps: float, *, input_tokens: int, output_tokens: int
+    ) -> RatePoint:
+        """A constant-length workload at one offered rate.
+
+        Fixed lengths are the anti-pattern this repository argues against for a
+        *headline* measurement, and that is not what this is for. It exists so a
+        cross-validation can put both harnesses on identical work: the two
+        sample ShareGPT differently — measured, ours drew 303 output tokens per
+        request against vLLM's 192 from the same corpus — so throughput and
+        end-to-end latency differ by the length ratio however correct both
+        implementations are. Holding lengths constant removes the workload from
+        the comparison and leaves only the code under test.
+        """
+        corpus = self._load_corpus()
+        tokenizer = load_tokenizer(
+            self.config.model.hf_id, self.config.model.revision, self.hf_cache_dir
+        )
+        defaults = self.config.defaults
+        seed = self.config.workload.seed
+
+        total = (
+            num_requests_for_duration(rate_rps, defaults.measurement_duration_s)
+            + defaults.warmup_requests
+        )
+        sampler = FixedLengthSampler(input_tokens=input_tokens, output_tokens=output_tokens)
+        pairs = clamp_to_context(sampler.sample(total, seed=seed), self.config.model.max_model_len)
+        specs = build_requests(pairs, corpus.corpus_token_ids, tokenizer, seed=seed)
+        schedule = poisson_schedule(rate_rps=rate_rps, num_requests=total, seed=seed)
+
+        return RatePoint(
+            rate_rps=rate_rps,
+            schedule=schedule,
+            specs=specs,
+            length_source=LengthSource.FIXED,
+        )
 
     def trace_point(self, *, target_rate_rps: float, trace_path: Path) -> RatePoint:
         """Build a replay of recorded production arrivals.
@@ -671,13 +712,20 @@ class SweepRunner:
         (log_dir / f"{config_id}.startup.log").write_text(handle.startup_log)
 
     def _write(self, run: RunResult, *, label: str | None = None) -> Path:
-        # The rate stays in the filename whenever there is one. A drift canary
-        # sweeps the whole ladder under a single label, so omitting it would
-        # have every rate overwrite the last and leave one file claiming to be
-        # the canary.
+        # The run's control parameter goes in the filename. A drift canary
+        # sweeps the whole ladder under a single label, so omitting the rate
+        # would have every rate overwrite the last and leave one file claiming
+        # to be the canary; a closed-loop exhibit swept over concurrencies has
+        # no rate at all and would collide the same way.
         stem = label or run.config_id
         rate = run.workload.request_rate_rps
-        suffix = f"__{rate:g}rps" if rate is not None else ""
+        concurrency = run.workload.concurrency
+        if rate is not None:
+            suffix = f"__{rate:g}rps"
+        elif concurrency is not None:
+            suffix = f"__c{concurrency}"
+        else:
+            suffix = ""
         name = f"{stem}{suffix}__rep{run.repeat_index}.json"
         path = self.results_dir / name
         path.write_text(json.dumps(json.loads(run.model_dump_json()), indent=2) + "\n")
