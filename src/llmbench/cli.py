@@ -357,7 +357,10 @@ def methodology(
     matched_rate: Annotated[
         float, typer.Option(help="Poisson rate the exhibits are compared against")
     ] = 4.0,
-    concurrency: Annotated[int, typer.Option(help="Closed-loop worker pool")] = 64,
+    concurrency: Annotated[
+        int | None,
+        typer.Option(help="Closed-loop worker pool; unset uses the matrix value"),
+    ] = None,
     runs_only: Annotated[str, typer.Option(help="Comma-separated methodology run ids")] = "",
     require_locked_clocks: Annotated[bool, typer.Option(help="Refuse to run unlocked")] = False,
 ) -> None:

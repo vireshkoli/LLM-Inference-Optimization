@@ -677,7 +677,7 @@ class SweepRunner:
         *,
         trace_path: Path = Path("data/azure_trace.csv"),
         matched_rate_rps: float = 4.0,
-        closed_loop_concurrency: int = 64,
+        closed_loop_concurrency: int | None = None,
         run_ids: list[str] | None = None,
     ) -> list[Path]:
         """Execute the runs that test the methodology rather than rank configs.
@@ -692,6 +692,8 @@ class SweepRunner:
                 Both the trace window and the closed-loop concurrency are chosen
                 to offer comparable load, because a difference in tail latency is
                 only attributable to the arrival process when the load matches.
+            closed_loop_concurrency: Overrides the worker count declared in the
+                matrix. ``None`` keeps the matrix's own value.
         """
         self.results_dir.mkdir(parents=True, exist_ok=True)
         preflight = run_preflight(
@@ -756,17 +758,31 @@ class SweepRunner:
         *,
         trace_path: Path,
         matched_rate_rps: float,
-        closed_loop_concurrency: int,
+        closed_loop_concurrency: int | None,
     ) -> list[RatePoint]:
         """Turn one declared methodology run into the points to measure."""
         if entry.arrival_process is ArrivalProcess.TRACE_REPLAY:
             return [self.trace_point(target_rate_rps=matched_rate_rps, trace_path=trace_path)]
         if entry.arrival_process is ArrivalProcess.CLOSED_LOOP:
-            return [
-                self.closed_loop_point(
-                    concurrency=entry.concurrency or closed_loop_concurrency,
-                    matched_rate_rps=matched_rate_rps,
+            # An explicit override wins over the matrix. The reverse —
+            # `entry.concurrency or override` — silently ignored the caller
+            # whenever the matrix declared a value, so a sweep over six
+            # concurrencies ran all six at the matrix's 64 and overwrote one set
+            # of files six times.
+            concurrency = (
+                closed_loop_concurrency
+                if closed_loop_concurrency is not None
+                else entry.concurrency
+            )
+            if concurrency is None:
+                msg = (
+                    f"{entry.id} is a closed-loop run but neither the matrix nor the caller "
+                    f"supplied a concurrency; there is no default that would be meaningful, "
+                    f"since concurrency *is* the offered load for this generator"
                 )
+                raise ValueError(msg)
+            return [
+                self.closed_loop_point(concurrency=concurrency, matched_rate_rps=matched_rate_rps)
             ]
         # A drift canary declares no arrival process: it is the *same* run as the
         # original, repeated at the end of the sweep, and its value lies entirely

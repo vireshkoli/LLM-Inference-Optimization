@@ -1,10 +1,10 @@
 {
   "schema_version": "1.2.0",
-  "run_id": "ab2576759d254513aa09b8733343ff28",
+  "run_id": "800e993806e94656b395e810716fb552",
   "config_id": "vllm-bf16",
-  "repeat_index": 2,
-  "started_at": "2026-09-15T20:52:21.429230Z",
-  "finished_at": "2026-09-15T20:55:22.061639Z",
+  "repeat_index": 1,
+  "started_at": "2026-09-15T18:49:04.357796Z",
+  "finished_at": "2026-09-15T18:52:31.847079Z",
   "engine": {
     "name": "vllm",
     "version": "0.26.0",
@@ -25,14 +25,14 @@
     "weights_gib": 15.0
   },
   "workload": {
-    "arrival_process": "closed-loop",
-    "request_rate_rps": null,
-    "concurrency": 64,
+    "arrival_process": "poisson",
+    "request_rate_rps": 4.0,
+    "concurrency": null,
     "length_source": "sharegpt",
     "seed": 20260810,
     "num_requests": 720,
     "warmup_requests": 50,
-    "measurement_duration_s": 180.48518838640302,
+    "measurement_duration_s": 195.3508280273527,
     "ignore_eos": true,
     "input_len_tokens": {
       "count": 720,
@@ -88,36 +88,36 @@
   "requests_failed": 0,
   "ttft_s": {
     "count": 720,
-    "mean": 0.22577260710919897,
-    "std": 0.25561397112287193,
-    "min": 0.1295410357415676,
-    "p50": 0.17082166532054543,
-    "p90": 0.2713709917850793,
-    "p95": 0.36218002014793405,
-    "p99": 2.09709818652831,
-    "max": 2.3792906859889627
+    "mean": 0.18127413392584357,
+    "std": 0.06988188874370357,
+    "min": 0.10314016882330179,
+    "p50": 0.16402684804052114,
+    "p90": 0.24650084180757403,
+    "p95": 0.3137802153825759,
+    "p99": 0.5178455210942765,
+    "max": 0.6969347540289164
   },
   "tpot_s": {
     "count": 720,
-    "mean": 0.044072793895590705,
-    "std": 0.0024960097125723375,
-    "min": 0.03283149398581978,
-    "p50": 0.04414333432222585,
-    "p90": 0.046720622773195254,
-    "p95": 0.047628071006923844,
-    "p99": 0.05100571433850377,
-    "max": 0.05924115417939094
+    "mean": 0.042075113082115576,
+    "std": 0.0034941134251939183,
+    "min": 0.031942784142302116,
+    "p50": 0.04247889734575905,
+    "p90": 0.046405458309194646,
+    "p95": 0.047415395801841814,
+    "p99": 0.049037936885053125,
+    "max": 0.05391223877668381
   },
   "e2e_latency_s": {
     "count": 720,
-    "mean": 13.538692938185866,
-    "std": 8.74754556879283,
-    "min": 0.35218395106494427,
-    "p50": 12.138397016562521,
-    "p90": 26.397948721144353,
-    "p95": 32.09702474828809,
-    "p99": 34.66339612226002,
-    "max": 62.50512124598026
+    "mean": 12.93206157411397,
+    "std": 8.486877612742246,
+    "min": 0.40757002029567957,
+    "p50": 11.579947384539992,
+    "p90": 25.659180799685416,
+    "p95": 29.740864852908995,
+    "p99": 34.05081441322341,
+    "max": 59.60451533552259
   },
   "output_tokens": {
     "count": 720,
@@ -130,25 +130,25 @@
     "p99": 769.0,
     "max": 1395.0
   },
-  "output_token_throughput": 1210.669983246456,
-  "request_throughput": 3.98924702041778,
+  "output_token_throughput": 1118.5414579835049,
+  "request_throughput": 3.6856767246422257,
   "dispatch_lag_s": {
     "count": 720,
-    "mean": 0.0,
-    "std": 0.0,
-    "min": 0.0,
-    "p50": 0.0,
-    "p90": 0.0,
-    "p95": 0.0,
-    "p99": 0.0,
-    "max": 0.0
+    "mean": 0.00405321686476883,
+    "std": 0.006245004549017237,
+    "min": 8.860509842634201e-05,
+    "p50": 0.0013270983472466469,
+    "p90": 0.011784240137785675,
+    "p95": 0.014262083545327186,
+    "p99": 0.018684806721284954,
+    "max": 0.11375099606812
   },
   "gpu_telemetry": {
-    "sample_count": 171,
+    "sample_count": 197,
     "temperature_c": {
-      "count": 171,
-      "mean": 68.82456140350877,
-      "std": 2.3355088130470096,
+      "count": 197,
+      "mean": 69.11167512690355,
+      "std": 2.4156250541157425,
       "min": 56.0,
       "p50": 70.0,
       "p90": 71.0,
@@ -157,9 +157,9 @@
       "max": 71.0
     },
     "sm_clock_mhz": {
-      "count": 171,
-      "mean": 1684.122807017544,
-      "std": 79.14079618117844,
+      "count": 197,
+      "mean": 1693.020304568528,
+      "std": 74.09275017391131,
       "min": 1410.0,
       "p50": 1725.0,
       "p90": 1740.0,
@@ -168,15 +168,15 @@
       "max": 1740.0
     },
     "power_w": {
-      "count": 171,
-      "mean": 293.71941520467834,
-      "std": 16.6595778506221,
-      "min": 116.01,
-      "p50": 295.65,
-      "p90": 301.42,
-      "p95": 302.32500000000005,
-      "p99": 304.402,
-      "max": 309.55
+      "count": 197,
+      "mean": 294.6784263959391,
+      "std": 14.976836262285955,
+      "min": 115.93,
+      "p50": 296.86,
+      "p90": 300.764,
+      "p95": 301.68199999999996,
+      "p99": 305.23999999999995,
+      "max": 306.88
     },
     "memory_used_mib_max": 41461,
     "throttle_reasons_observed": [
@@ -187,6 +187,6 @@
   "validity": "valid",
   "validity_notes": [
     "clock lock of 1740 MHz is recorded but unverifiable while GPU 1 is idle \u2014 an A40 drops to ~210 MHz at idle even when locked. It is re-checked against sampled clocks once the run completes.",
-    "another GPU in this chassis is under load: GPU0 (NVIDIA A40): 21529 MiB, 100% util. A40s are passively cooled and share chassis airflow, so inlet temperature on the measurement device is elevated. Results are stamped neighbor_gpu_busy=true."
+    "another GPU in this chassis is under load: GPU0 (NVIDIA A40): 21483 MiB, 100% util. A40s are passively cooled and share chassis airflow, so inlet temperature on the measurement device is elevated. Results are stamped neighbor_gpu_busy=true."
   ]
 }

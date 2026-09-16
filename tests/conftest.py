@@ -8,9 +8,12 @@ test suite requires a GPU, an engine, or a network.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
+from llmbench.config import load_sweep_config
+from llmbench.runner import SweepRunner
 from llmbench.schema import (
     ArrivalProcess,
     ClockPolicy,
@@ -187,4 +190,20 @@ def run_result(
         ),
         gpu_telemetry=gpu_telemetry,
         validity=RunValidity.VALID,
+    )
+
+
+@pytest.fixture
+def sweep_runner(tmp_path: Path) -> SweepRunner:
+    """A runner over the real sweep matrix, with no GPU and no engine.
+
+    Only the planning half of the runner is exercised by the tests that use
+    this — turning declared configuration into the points that would be
+    measured — which needs the matrix but nothing else.
+    """
+    return SweepRunner(
+        load_sweep_config(Path("configs/sweep.yaml")),
+        gpu_index=0,
+        results_dir=tmp_path,
+        configs_dir=Path("configs"),
     )
