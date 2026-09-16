@@ -104,7 +104,15 @@ def check_clocks(gpu_index: int, *, state_file: Path | None = None) -> tuple[boo
     An unlocked run is not invalid; the policy just has to be recorded honestly
     either way so a reader can weigh late-run drift themselves.
     """
-    path = state_file or Path("results/.clock_policy.json")
+    # One record per GPU. The original single file belongs to GPU 1 and is kept
+    # under its original name so existing results keep pointing at it; other
+    # cards get their own, so locking one can never overwrite another's record.
+    if state_file is not None:
+        path = state_file
+    elif gpu_index == 1:
+        path = Path("results/.clock_policy.json")
+    else:
+        path = Path(f"results/.clock_policy.gpu{gpu_index}.json")
     if not path.exists():
         return False, None
 

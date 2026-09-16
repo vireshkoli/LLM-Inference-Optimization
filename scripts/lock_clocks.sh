@@ -17,7 +17,15 @@ set -euo pipefail
 GPU_INDEX="${1:?usage: lock_clocks.sh <gpu_index> <lock|unlock|status> [sm_mhz]}"
 ACTION="${2:?usage: lock_clocks.sh <gpu_index> <lock|unlock|status> [sm_mhz]}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STATE_FILE="${REPO_ROOT}/results/.clock_policy.json"
+# One file per GPU. A single shared file meant locking a second card silently
+# overwrote the first card's record, and every result stamped against it would
+# have lost its evidence. GPU 1 keeps the original filename so the 200+ records
+# already referencing it stay valid.
+if [[ "$GPU_INDEX" == "1" ]]; then
+  STATE_FILE="${REPO_ROOT}/results/.clock_policy.json"
+else
+  STATE_FILE="${REPO_ROOT}/results/.clock_policy.gpu${GPU_INDEX}.json"
+fi
 
 max_sm() { nvidia-smi --query-gpu=clocks.max.sm --format=csv,noheader,nounits -i "$GPU_INDEX"; }
 max_mem() { nvidia-smi --query-gpu=clocks.max.memory --format=csv,noheader,nounits -i "$GPU_INDEX"; }
