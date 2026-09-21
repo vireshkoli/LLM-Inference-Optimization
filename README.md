@@ -12,7 +12,9 @@ Full findings in **[REPORT.md](REPORT.md)**; how it was measured, and which numb
 trustworthy, in **[METHODOLOGY.md](METHODOLOGY.md)**. Measured on one NVIDIA A40.
 
 **→ [Interactive results explorer](https://vireshkoli.github.io/LLM-Inference-Optimization/)** —
-set a p95 TTFT budget and see which configuration is cheapest under it.
+set a p95 TTFT budget and see which configuration is cheapest under it. Also on
+**[Hugging Face Spaces](https://huggingface.co/spaces/vireshk/LLM-Inference-Optimization)** —
+the same static page, deployed by `make deploy-hf`.
 
 ---
 
