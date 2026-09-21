@@ -4,9 +4,11 @@ This document exists to let a reader decide whether to believe the numbers. It s
 measured, how load was generated, what was held constant, what was discarded, and — most
 importantly — what is wrong with the setup anyway.
 
-> **Status:** methodology is fixed as of Phase 1 and is stated here *before* results exist, so
-> it cannot be retrofitted to flatter them. Sections marked _(pending)_ are filled from measured
-> data in Phase 8.
+> **Status:** the methodology was fixed in Phase 1 and written *before* results existed, so it
+> could not be retrofitted to flatter them. Every section is now filled from measured data.
+> Where a measurement contradicted what this document originally claimed — the direction of the
+> closed-loop error in §2, the burstiness of real traffic in §3 — the original claim is kept
+> and the contradiction stated beside it, rather than reworded to look intended.
 
 ---
 
