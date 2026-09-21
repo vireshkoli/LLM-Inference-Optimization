@@ -34,14 +34,18 @@ from llmbench.engines.preflight import run_preflight
 from llmbench.engines.sglang import SglangEngine
 from llmbench.engines.vllm import VllmEngine
 from llmbench.report.render import (
+    bandwidth_table,
     cost_note,
     crossvalidation_table,
     drift_table,
+    engine_axis_table,
+    headline_facts,
     latency_table,
     load_quality,
     methodology_table,
     pareto_markers,
     quality_table,
+    regime_table,
     render_into,
     sla_table,
     validity_summary,
@@ -143,6 +147,21 @@ def make_charts(
         console.print(f"  wrote {path}")
 
 
+def _load_label(run: RunResult) -> str:
+    """The run's control parameter, whichever kind it has.
+
+    A closed-loop run has a pool size and no rate; a trace replay has neither.
+    Formatting the rate unconditionally crashed `show` the moment the first
+    methodology run landed on disk.
+    """
+    w = run.workload
+    if w.request_rate_rps is not None:
+        return f"{w.request_rate_rps:g} rps"
+    if w.concurrency is not None:
+        return f"N={w.concurrency} ({w.arrival_process.value})"
+    return w.arrival_process.value
+
+
 @app.command()
 def show(
     results: Annotated[Path, typer.Option(help="Directory of result JSON")] = Path("results/runs"),
@@ -173,7 +192,7 @@ def show(
         ok = run.is_reportable
         table.add_row(
             run.config_id,
-            f"{run.workload.request_rate_rps:g}",
+            _load_label(run),
             str(run.repeat_index),
             f"{run.ttft_s.p95 * 1e3:.1f} ms",
             f"{run.tpot_s.p95 * 1e3:.1f} ms",
@@ -189,7 +208,7 @@ def show(
         console.print(f"\n[yellow]{len(invalid)} run(s) not reportable:[/yellow]")
         for run in invalid:
             for note in run.validity_notes:
-                console.print(f"  {run.config_id} @ {run.workload.request_rate_rps:g} rps: {note}")
+                console.print(f"  {run.config_id} @ {_load_label(run)}: {note}")
 
 
 @app.command()
@@ -319,7 +338,13 @@ def report(
         )
 
     blocks = {
+        "headline": headline_facts(
+            runs, quality, gpu_hourly_usd=price, max_ttft_p95_s=sla_ttft_ms / 1e3
+        ),
         "sla-table": sla_table(runs, gpu_hourly_usd=price, ttft_budgets_ms=budgets),
+        "bandwidth-table": bandwidth_table(runs, quality),
+        "regime-table": regime_table(runs),
+        "engine-axis-table": engine_axis_table(runs),
         "methodology-table": methodology_table(
             runs, baseline_config_id="vllm-bf16", rate_rps=sla_methodology_rate
         ),

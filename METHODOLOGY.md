@@ -503,6 +503,6 @@ TP is not optional, the interconnect becomes the thing worth measuring rather th
 contaminating the measurement.
 
 **A machine that is not shared.** Two of the incidents recorded in §5a — the deleted checkpoints
-and the busy-neighbour stamp on 66 of 168 runs — are artifacts of a multi-tenant box rather than
+and the busy-neighbour stamp on 66 of the first 168 runs — are artifacts of a multi-tenant box rather than
 of the method. Neither invalidated a result, because both were detected and bounded, but both
 cost time that dedicated hardware would not have.

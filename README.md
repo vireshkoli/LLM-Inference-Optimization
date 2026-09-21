@@ -8,9 +8,8 @@
      results/runs/*.json. Nothing here is hand-typed; a rebuild on unchanged results leaves
      `git diff` empty. -->
 
-**168 measured runs across 6 configurations**, open-loop, three repeats per point, on one
-NVIDIA A40. Full findings in **[REPORT.md](REPORT.md)**; how it was measured, and which numbers
-are not trustworthy, in **[METHODOLOGY.md](METHODOLOGY.md)**.
+Full findings in **[REPORT.md](REPORT.md)**; how it was measured, and which numbers are not
+trustworthy, in **[METHODOLOGY.md](METHODOLOGY.md)**. Measured on one NVIDIA A40.
 
 **→ [Interactive results explorer](https://vireshkoli.github.io/LLM-Inference-Optimization/)** —
 set a p95 TTFT budget and see which configuration is cheapest under it.
@@ -121,15 +120,15 @@ decode — is what actually degrades.
 
 ![Quality vs cost at a fixed latency budget](results/figures/pareto_quality_cost.png)
 
-Under a **p95 TTFT budget of 500 ms**, `vllm-int8-w8a8` is cost-optimal: **2116 output
-tokens/sec at $0.0525 per million tokens — 27 % cheaper than BF16** at a tighter tail latency.
-BF16 is dominated; three configurations are cheaper at equal-or-better measured quality.
+<!-- BEGIN:headline -->
+**244 measured runs** across 6 configurations, 6 quality evaluations, open-loop, at least three repeats per point.
 
-The grey band is BF16's 95 % confidence interval on GSM8K, and every configuration falls inside
-it. **Quality does not separate these configurations at this sample size** — the spread (0.0152)
-is smaller than one configuration's 95 % half-width (0.0240) — so the decision is made on cost
-and latency, where the differences are large and reproducible. Perplexity does separate them;
-task accuracy does not. Saying so is the point.
+Under a **p95 TTFT budget of 500 ms**, `vllm-int8-w8a8` is cost-optimal: **2116 output tokens/sec at $0.0525 per million tokens** — 27 % cheaper than `vllm-bf16`. `vllm-bf16` is dominated: 4 configurations are cheaper at equal-or-better measured quality.
+
+The grey band on the chart is `vllm-bf16`'s 95 % confidence interval on GSM8K, and every configuration falls inside it. The quality spread across all 6 configurations is 0.0159, smaller than a single configuration's 95 % half-width of 0.0240 — **quality does not separate these configurations at this sample size**, so the decision is made on cost and latency.
+<!-- END:headline -->
+
+Perplexity does separate the configurations; task accuracy does not. Saying so is the point.
 
 ### Two findings
 
@@ -140,8 +139,8 @@ model cannot explain; the likely cause is that Marlin is tuned for low batch whi
 general BF16 path is not. That is reported as unexplained rather than claimed as confirmation.
 
 **2. The best quantization inverts between load regimes.** INT4 wins decode latency at every
-rate up to 7 rps. At 8 rps it collapses — TTFT p95 of **3288 ms (AWQ) and 9594 ms (GPTQ) against
-459 ms for INT8**. Both INT4 formats are W4A16: 4-bit weights, 16-bit activations, so they buy
+rate up to 6 rps; at 7 rps INT8 overtakes it on decode too, and at 8 rps INT4 collapses — TTFT
+p95 of **3288 ms (AWQ) and 9594 ms (GPTQ) against 459 ms for INT8**. Both INT4 formats are W4A16: 4-bit weights, 16-bit activations, so they buy
 bandwidth and nothing else. That is exactly right for bandwidth-bound decode and worthless for
 compute-bound prefill, where they additionally pay to dequantize. W8A8 feeds the A40's INT8
 tensor cores and accelerates prefill arithmetic itself. As load rises the bottleneck migrates
@@ -192,7 +191,7 @@ measured. REPORT.md §6 carries the generated tables; this is what they say.
 | **Azure trace replay** | Five independent windows against five Poisson seeds: p99 within +4 ms (±21). CV² 1.02, count dispersion ≈1.0 at every timescale. For this workload Poisson is a measured property of the traffic, not an assumption. |
 | **Drift canary** | The first configuration re-run at the end of the sweep: within the sweep's own repeat-to-repeat noise. |
 | **SGLang quality** | Same checkpoint, two engines, identical GSM8K to four decimals (0.7316 / 0.7316). |
-| **INT8 ceiling** | Saturates between 9 and 10 rps (2308 tok/s at 9), against 7–8 for every other configuration. The headline finding now has an upper bound. |
+| **INT8 ceiling** | Saturates between 9 and 10 rps (~2300 tok/s at 9), against 7–8 for every other configuration. The headline finding now has an upper bound. |
 
 Two of those results were found by the exhibit contradicting what the repository claimed
 going in. They are reported as such rather than reworded to look intended.

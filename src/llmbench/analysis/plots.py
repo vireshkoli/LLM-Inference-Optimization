@@ -371,18 +371,41 @@ def plot_pareto(
             linestyle="none",
             zorder=4 if m.on_frontier else 3,
         )
+
+    # Labels live on a rail to the right of the axes, ordered by cost, each
+    # joined to its point by a leader line. Six configurations inside one
+    # confidence band sit too close for any offset placement to keep their
+    # labels apart — and a chart whose point is that the points are close
+    # cannot be allowed to become unreadable for exactly that reason.
+    by_cost = sorted(markers, key=lambda m: m.cost_per_1m_usd)
+    top, bottom = 0.93, 0.12
+    step = (top - bottom) / max(len(by_cost) - 1, 1)
+    for i, m in enumerate(by_cost):
+        colour = SERIES_COLORS[order[m.config_id] % len(SERIES_COLORS)]
         ax.annotate(
-            f"{m.config_id}\n{m.throughput_tokens_s:.0f} tok/s"
-            + ("" if m.on_frontier else "  · dominated"),
+            f"{m.config_id} · {m.throughput_tokens_s:.0f} tok/s"
+            + ("" if m.on_frontier else " · dominated"),
             xy=(m.cost_per_1m_usd, m.quality),
-            xytext=(10, -4),
-            textcoords="offset points",
+            xycoords="data",
+            xytext=(1.03, top - i * step),
+            textcoords="axes fraction",
             color=_TEXT_PRIMARY if m.on_frontier else _TEXT_SECONDARY,
             fontsize=8.5,
-            va="top",
+            fontweight="bold" if m.on_frontier else "normal",
+            ha="left",
+            va="center",
+            arrowprops={
+                "arrowstyle": "-",
+                "color": colour,
+                "lw": 0.9,
+                "alpha": 0.6,
+                "shrinkA": 0,
+                "shrinkB": 7,
+            },
+            zorder=5,
         )
 
-    ax.margins(x=0.30, y=0.22)
+    ax.margins(x=0.08, y=0.22)
     _style_axes(
         ax,
         xlabel="Cost per 1M output tokens (USD)",

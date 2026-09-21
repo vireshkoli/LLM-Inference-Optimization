@@ -13,7 +13,7 @@ import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from llmbench.analysis.cost import best_under_sla, operating_points
+from llmbench.analysis.cost import ConfigOperatingPoint, best_under_sla, operating_points
 from llmbench.analysis.methodology import (
     ProcessComparison,
     drift_comparison,
@@ -25,8 +25,11 @@ from llmbench.schema import ArrivalProcess, QualityResult, RunResult, RunValidit
 
 __all__ = [
     "MissingBlockError",
+    "bandwidth_table",
     "crossvalidation_table",
     "drift_table",
+    "engine_axis_table",
+    "headline_facts",
     "latency_table",
     "load_quality",
     "load_runs",
@@ -34,6 +37,7 @@ __all__ = [
     "pareto_markers",
     "quality_scores",
     "quality_table",
+    "regime_table",
     "render_into",
     "sla_table",
     "validity_summary",
@@ -488,3 +492,163 @@ def crossvalidation_table(path: Path) -> str:
             "the matched run above exists.",
         ]
     return "\n".join(out).rstrip()
+
+
+def headline_facts(
+    runs: Sequence[RunResult],
+    quality: Sequence[QualityResult],
+    *,
+    gpu_hourly_usd: float,
+    max_ttft_p95_s: float,
+    baseline_config_id: str = "vllm-bf16",
+) -> str:
+    """The sentences in the README that used to be typed.
+
+    They were true when written and went stale twice — once when the INT8
+    ladder was extended, once when SGLang gained task scores and the frontier
+    grew from four configurations to six. A sentence that carries a number is a
+    result, and results are generated here or not stated.
+    """
+    configs = sorted(
+        {r.config_id for r in runs if r.workload.arrival_process is ArrivalProcess.POISSON}
+    )
+    markers = pareto_markers(
+        runs, quality, gpu_hourly_usd=gpu_hourly_usd, max_ttft_p95_s=max_ttft_p95_s
+    )
+    if not markers:
+        return "_No results to summarise yet._"
+
+    cheapest = min(markers, key=lambda m: m.cost_per_1m_usd)
+    base = next((m for m in markers if m.config_id == baseline_config_id), None)
+    scores = quality_scores(quality)
+    values = [v for v, _ in scores.values()]
+    spread = max(values) - min(values)
+    half_width = 1.96 * max(e for _, e in scores.values())
+    inside = base is not None and all(
+        abs(m.quality - base.quality) <= base.quality_ci for m in markers
+    )
+
+    lines = [
+        f"**{len(runs)} measured runs** across {len(configs)} configurations, "
+        f"{len(quality)} quality evaluations, open-loop, at least three repeats per point.",
+        "",
+        f"Under a **p95 TTFT budget of {max_ttft_p95_s * 1e3:.0f} ms**, `{cheapest.config_id}` is "
+        f"cost-optimal: **{cheapest.throughput_tokens_s:.0f} output tokens/sec at "
+        f"${cheapest.cost_per_1m_usd:.4f} per million tokens**",
+    ]
+    if base is not None and base.config_id != cheapest.config_id:
+        saving = (1 - cheapest.cost_per_1m_usd / base.cost_per_1m_usd) * 100
+        dominators = [
+            m
+            for m in markers
+            if m.config_id != base.config_id
+            and m.cost_per_1m_usd <= base.cost_per_1m_usd
+            and m.quality >= base.quality
+        ]
+        lines[-1] += (
+            f" — {saving:.0f} % cheaper than `{base.config_id}`. `{base.config_id}` is dominated: "
+            f"{len(dominators)} configurations are cheaper at equal-or-better measured quality."
+        )
+    else:
+        lines[-1] += "."
+
+    lines += [
+        "",
+        f"The grey band on the chart is `{baseline_config_id}`'s 95 % confidence interval on "
+        f"GSM8K{', and every configuration falls inside it' if inside else ''}. "
+        f"The quality spread across all {len(markers)} configurations is {spread:.4f}, "
+        f"{'smaller' if spread < half_width else 'larger'} than a single configuration's 95 % "
+        f"half-width of {half_width:.4f}"
+        + (
+            " — **quality does not separate these configurations at this sample size**, so the "
+            "decision is made on cost and latency."
+            if spread < half_width
+            else "."
+        ),
+    ]
+    return "\n".join(lines)
+
+
+def bandwidth_table(runs: Sequence[RunResult], quality: Sequence[QualityResult]) -> str:
+    """Finding 1: decode speedup at 1 rps against the weight-byte ratio."""
+    pts = operating_points(runs, 1.0)
+    weights = {x.config_id: x.model.weights_gib for x in quality}
+    base = next((p for p in pts.get("vllm-bf16", []) if p.rate_rps == 1.0), None)
+    if base is None or "vllm-bf16" not in weights:
+        return "_Finding 1 needs vllm-bf16 at 1 rps with a quality record._"
+    lines = [
+        "| Config | Weights | Predicted speedup (byte ratio) | Measured TPOT p95 "
+        "| Measured speedup |",
+        "|---|---|---|---|---|",
+    ]
+    for cfg in ("vllm-bf16", "vllm-int8-w8a8", "vllm-gptq-int4", "vllm-awq-int4"):
+        p = next((p for p in pts.get(cfg, []) if p.rate_rps == 1.0), None)
+        if p is None or cfg not in weights:
+            continue
+        byte_ratio = weights["vllm-bf16"] / weights[cfg]
+        speed = base.tpot_p95_s / p.tpot_p95_s
+        bold = "**" if cfg == "vllm-int8-w8a8" else ""
+        lines.append(
+            f"| `{cfg}` | {weights[cfg]:.2f} GiB | {byte_ratio:.2f}x | {p.tpot_p95_s * 1e3:.2f} ms "
+            f"| {bold}{speed:.2f}x{bold} |"
+        )
+    g = next((p for p in pts.get("vllm-gptq-int4", []) if p.rate_rps == 1.0), None)
+    a = next((p for p in pts.get("vllm-awq-int4", []) if p.rate_rps == 1.0), None)
+    if g and a:
+        lines += [
+            "",
+            f"Act-order overhead, isolated: `gptq_marlin` {g.tpot_p95_s * 1e3:.2f} ms vs "
+            f"`awq_marlin` {a.tpot_p95_s * 1e3:.2f} ms — "
+            f"**a {(g.tpot_p95_s / a.tpot_p95_s - 1) * 100:.1f} % decode penalty** "
+            f"for `desc_act=true` at identical bit width.",
+        ]
+    return "\n".join(lines)
+
+
+def regime_table(runs: Sequence[RunResult]) -> str:
+    """Finding 2: which configuration wins TPOT and TTFT at each offered rate."""
+    pts = operating_points(runs, 1.0)
+    vllm = [c for c in pts if c.startswith("vllm-")]
+    rates = sorted({p.rate_rps for c in vllm for p in pts[c]})
+    lines = [
+        "| Offered rate | TPOT p95 winner | TTFT p95 winner | Configs still valid |",
+        "|---|---|---|---|",
+    ]
+    for rate in rates:
+        at = {c: p for c in vllm for p in pts[c] if p.rate_rps == rate}
+        if not at:
+            continue
+        tp = min(at.items(), key=lambda kv: kv[1].tpot_p95_s)
+        tt = min(at.items(), key=lambda kv: kv[1].ttft_p95_s)
+        lines.append(
+            f"| {rate:g} rps | `{tp[0]}` ({tp[1].tpot_p95_s * 1e3:.1f} ms) "
+            f"| `{tt[0]}` ({tt[1].ttft_p95_s * 1e3:.0f} ms) | {len(at)} of {len(vllm)} |"
+        )
+    return "\n".join(lines)
+
+
+def _tok(p: ConfigOperatingPoint | None) -> str:
+    return "—" if p is None else f"{p.throughput_tokens_s:.0f}"
+
+
+def _ttft(p: ConfigOperatingPoint | None) -> str:
+    return "—" if p is None else f"{p.ttft_p95_s * 1e3:.0f} ms"
+
+
+def engine_axis_table(runs: Sequence[RunResult]) -> str:
+    """vLLM against SGLang on the same checkpoints, at matched offered rates."""
+    pts = operating_points(runs, 1.0)
+    pairs = (("vllm-bf16", "sglang-bf16"), ("vllm-awq-int4", "sglang-awq-int4"))
+    lines = [
+        "| Rate | Checkpoint | vLLM tok/s | SGLang tok/s | vLLM TTFT p95 | SGLang TTFT p95 |",
+        "|---|---|---|---|---|---|",
+    ]
+    for rate in (1.0, 4.0, 8.0):
+        for v, sg in pairs:
+            pv = next((p for p in pts.get(v, []) if p.rate_rps == rate), None)
+            ps = next((p for p in pts.get(sg, []) if p.rate_rps == rate), None)
+            lines.append(
+                f"| {rate:g} rps | {v.removeprefix('vllm-')} | {_tok(pv)} | {_tok(ps)} "
+                f"| {_ttft(pv)} | {_ttft(ps)} |"
+            )
+    return "\n".join(lines)
