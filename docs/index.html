@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LLM Inference Optimization — results explorer</title>
 <meta name="description" content="Open-loop benchmark results for quantized Llama-3.1-8B serving on an NVIDIA A40.">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.2/plotly.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.0/plotly.min.js"
+        onerror="window.__plotlyFailed = true"></script>
 <style>
   :root {
     --bg: #fcfcfb; --surface: #ffffff; --text: #0b0b0b; --muted: #52514e;
@@ -59,9 +60,9 @@
 <div class="wrap">
 
   <h1>Quantized LLM serving on an NVIDIA A40</h1>
-  <p class="lede">
-    168 open-loop measurements &middot; 6 configurations &middot; Llama-3.1-8B-Instruct &middot;
-    Poisson arrivals, 3 repeats per point, clocks locked, kernels asserted from engine logs.
+  <p class="lede" id="lede">
+    Llama-3.1-8B-Instruct &middot; open-loop Poisson arrivals, at least 3 repeats per point,
+    clocks locked, kernels asserted from engine logs.
   </p>
   <p class="lede">
     Every point below is a rate a server could actually be provisioned for. Oversubscribed
@@ -196,6 +197,16 @@ function renderTable(budget) {
 }
 
 function renderChart(budget) {
+  // Fail in the open. The chart library is the page's one external
+  // dependency; if it does not load, an empty panel looks like a page with
+  // no data, which is worse than a page that says what is wrong.
+  if (typeof Plotly === "undefined") {
+    document.getElementById("chart").innerHTML =
+      '<p class="note" style="padding:32px 0;text-align:center">' +
+      "The chart library failed to load from its CDN. The table and the budget " +
+      "verdict above are computed locally and remain correct.</p>";
+    return;
+  }
   const muted = dark() ? "#a8a69e" : "#52514e";
   const grid  = dark() ? "#33322c" : "#e3e2df";
   const traces = CONFIGS.map(cfg => {
@@ -248,6 +259,13 @@ fetch("results.json")
     ROWS = data;
     CONFIGS = [...new Set(data.map(r => r.config_id))].sort();
     CONFIGS.forEach((c, i) => { COLOR[c] = COLORS[i % COLORS.length]; });
+    // Counts come from the data the page loaded, never from typed text: a
+    // typed "168 measurements" survived two releases after it stopped being true.
+    const repeats = data.reduce((n, r) => n + r.repeats, 0);
+    document.getElementById("lede").innerHTML =
+      `${data.length} reportable operating points from ${repeats} runs &middot; ` +
+      `${CONFIGS.length} configurations &middot; Llama-3.1-8B-Instruct &middot; ` +
+      "open-loop Poisson arrivals, clocks locked, kernels asserted from engine logs.";
     document.getElementById("sla").addEventListener("input", refresh);
     window.matchMedia("(prefers-color-scheme: dark)")
           .addEventListener("change", () => renderChart(Number(document.getElementById("sla").value)));

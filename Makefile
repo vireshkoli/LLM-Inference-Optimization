@@ -126,7 +126,7 @@ report:  ## Regenerate every chart and table in README/REPORT from results JSON
 # missing file is not an error for every other target.
 -include .env
 export HF_TOKEN
-HF_SPACE ?= vireshkoli/LLM-Inference-Optimization
+HF_SPACE ?= vireshk/LLM-Inference-Optimization
 
 .PHONY: deploy-hf
 deploy-hf: report  ## Publish docs/ to a Hugging Face static Space (token from .env)
