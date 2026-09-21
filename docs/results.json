@@ -212,62 +212,62 @@
   {
     "config_id": "vllm-bf16",
     "rate_rps": 1.0,
-    "throughput_tokens_s": 264.77,
-    "throughput_std": 0.01,
-    "ttft_p95_ms": 141.87,
-    "tpot_p95_ms": 32.296,
-    "cost_per_1m_usd": 0.41965,
-    "repeats": 3
+    "throughput_tokens_s": 264.76,
+    "throughput_std": 0.02,
+    "ttft_p95_ms": 167.92,
+    "tpot_p95_ms": 32.565,
+    "cost_per_1m_usd": 0.41968,
+    "repeats": 6
   },
   {
     "config_id": "vllm-bf16",
     "rate_rps": 2.0,
-    "throughput_tokens_s": 566.01,
+    "throughput_tokens_s": 565.46,
     "throughput_std": 0.77,
-    "ttft_p95_ms": 140.65,
-    "tpot_p95_ms": 35.487,
-    "cost_per_1m_usd": 0.19631,
-    "repeats": 3
+    "ttft_p95_ms": 152.4,
+    "tpot_p95_ms": 36.0,
+    "cost_per_1m_usd": 0.1965,
+    "repeats": 6
   },
   {
     "config_id": "vllm-bf16",
     "rate_rps": 4.0,
-    "throughput_tokens_s": 1028.21,
-    "throughput_std": 0.04,
-    "ttft_p95_ms": 252.6,
-    "tpot_p95_ms": 45.011,
-    "cost_per_1m_usd": 0.10806,
-    "repeats": 3
+    "throughput_tokens_s": 1052.48,
+    "throughput_std": 33.75,
+    "ttft_p95_ms": 262.84,
+    "tpot_p95_ms": 45.378,
+    "cost_per_1m_usd": 0.10557,
+    "repeats": 11
   },
   {
     "config_id": "vllm-bf16",
     "rate_rps": 5.0,
-    "throughput_tokens_s": 1283.93,
-    "throughput_std": 0.08,
-    "ttft_p95_ms": 363.34,
-    "tpot_p95_ms": 55.413,
+    "throughput_tokens_s": 1283.89,
+    "throughput_std": 0.1,
+    "ttft_p95_ms": 364.39,
+    "tpot_p95_ms": 55.587,
     "cost_per_1m_usd": 0.08654,
-    "repeats": 3
+    "repeats": 6
   },
   {
     "config_id": "vllm-bf16",
     "rate_rps": 6.0,
-    "throughput_tokens_s": 1538.72,
-    "throughput_std": 0.34,
-    "ttft_p95_ms": 478.83,
-    "tpot_p95_ms": 66.339,
+    "throughput_tokens_s": 1538.79,
+    "throughput_std": 0.27,
+    "ttft_p95_ms": 480.98,
+    "tpot_p95_ms": 66.136,
     "cost_per_1m_usd": 0.07221,
-    "repeats": 3
+    "repeats": 6
   },
   {
     "config_id": "vllm-bf16",
     "rate_rps": 7.0,
-    "throughput_tokens_s": 1747.26,
-    "throughput_std": 0.7,
-    "ttft_p95_ms": 666.67,
-    "tpot_p95_ms": 111.111,
-    "cost_per_1m_usd": 0.06359,
-    "repeats": 3
+    "throughput_tokens_s": 1748.3,
+    "throughput_std": 1.24,
+    "ttft_p95_ms": 678.01,
+    "tpot_p95_ms": 109.498,
+    "cost_per_1m_usd": 0.06355,
+    "repeats": 6
   },
   {
     "config_id": "vllm-gptq-int4",
@@ -407,6 +407,16 @@
     "ttft_p95_ms": 458.97,
     "tpot_p95_ms": 66.729,
     "cost_per_1m_usd": 0.05251,
+    "repeats": 3
+  },
+  {
+    "config_id": "vllm-int8-w8a8",
+    "rate_rps": 9.0,
+    "throughput_tokens_s": 2303.4,
+    "throughput_std": 6.08,
+    "ttft_p95_ms": 2352.8,
+    "tpot_p95_ms": 101.993,
+    "cost_per_1m_usd": 0.04824,
     "repeats": 3
   }
 ]

@@ -235,3 +235,162 @@ class TestDriftCanary:
             )
             is None
         )
+
+
+class TestClosedLoopSelection:
+    """Closed-loop runs exist at many concurrencies; only the throughput-matched
+    one is a valid comparison, and pooling them averages unmatched loads into a
+    number that corresponds to nothing."""
+
+    def test_picks_the_throughput_matched_concurrency(self, run_result: RunResult) -> None:
+        runs = [
+            run_at(run_result, throughput=1000.0),
+            run_at(
+                run_result,
+                process=ArrivalProcess.CLOSED_LOOP,
+                rate=None,
+                concurrency=8,
+                throughput=250.0,
+                ttft_ms=(50.0, 100.0, 150.0),
+            ),
+            run_at(
+                run_result,
+                process=ArrivalProcess.CLOSED_LOOP,
+                rate=None,
+                concurrency=48,
+                throughput=1010.0,
+                ttft_ms=(100.0, 250.0, 500.0),
+            ),
+            run_at(
+                run_result,
+                process=ArrivalProcess.CLOSED_LOOP,
+                rate=None,
+                concurrency=128,
+                throughput=1700.0,
+                ttft_ms=(300.0, 2000.0, 3000.0),
+            ),
+        ]
+        cmp = process_comparison(
+            runs,
+            process=ArrivalProcess.CLOSED_LOOP,
+            baseline_config_id=run_result.config_id,
+            baseline_rate_rps=4.0,
+        )
+        assert cmp is not None
+        assert "N=48" in cmp.label
+        assert cmp.throughput == pytest.approx(1010.0)
+
+    def test_explicit_concurrency_is_honoured(self, run_result: RunResult) -> None:
+        runs = [
+            run_at(run_result, throughput=1000.0),
+            run_at(
+                run_result,
+                process=ArrivalProcess.CLOSED_LOOP,
+                rate=None,
+                concurrency=48,
+                throughput=1010.0,
+            ),
+            run_at(
+                run_result,
+                process=ArrivalProcess.CLOSED_LOOP,
+                rate=None,
+                concurrency=128,
+                throughput=1700.0,
+            ),
+        ]
+        cmp = process_comparison(
+            runs,
+            process=ArrivalProcess.CLOSED_LOOP,
+            baseline_config_id=run_result.config_id,
+            baseline_rate_rps=4.0,
+            concurrency=128,
+        )
+        assert cmp is not None
+        assert "N=128" in cmp.label
+        assert cmp.comparable is False
+
+
+class TestSessionMatching:
+    def test_latest_session_wins_over_an_earlier_flawed_one(self, run_result: RunResult) -> None:
+        """The trace replay was first measured as one window repeated, then
+        redesigned as independent windows. Pooling both would average a flawed
+        design into a sound one."""
+        t0 = datetime(2026, 9, 6, 18, 0, tzinfo=UTC)
+        t1 = datetime(2026, 9, 15, 18, 0, tzinfo=UTC)
+        runs = [
+            run_at(run_result, started=t1, ttft_ms=(100.0, 300.0, 540.0)),
+            run_at(
+                run_result,
+                process=ArrivalProcess.TRACE_REPLAY,
+                rate=None,
+                started=t0,
+                ttft_ms=(100.0, 300.0, 900.0),
+            ),  # old single-window run, far worse
+            run_at(
+                run_result,
+                process=ArrivalProcess.TRACE_REPLAY,
+                rate=None,
+                started=t1,
+                ttft_ms=(100.0, 300.0, 545.0),
+            ),  # redesigned study, matches
+        ]
+        cmp = process_comparison(
+            runs,
+            process=ArrivalProcess.TRACE_REPLAY,
+            baseline_config_id=run_result.config_id,
+            baseline_rate_rps=4.0,
+        )
+        assert cmp is not None
+        assert cmp.runs == 1
+        assert cmp.ttft_p99_ms == pytest.approx(545.0)
+
+    def test_contemporaneous_baseline_preferred(self, run_result: RunResult) -> None:
+        """Between-session variance exceeded the effect under test, so a
+        baseline from another session is a comparison against noise."""
+        aug = datetime(2026, 8, 19, 11, 0, tzinfo=UTC)
+        sep = datetime(2026, 9, 15, 18, 0, tzinfo=UTC)
+        runs = [
+            run_at(run_result, started=aug, ttft_ms=(100.0, 300.0, 900.0)),
+            run_at(run_result, started=sep, ttft_ms=(100.0, 300.0, 540.0)),
+            run_at(
+                run_result,
+                process=ArrivalProcess.TRACE_REPLAY,
+                rate=None,
+                started=sep,
+                ttft_ms=(100.0, 300.0, 545.0),
+            ),
+        ]
+        cmp = process_comparison(
+            runs,
+            process=ArrivalProcess.TRACE_REPLAY,
+            baseline_config_id=run_result.config_id,
+            baseline_rate_rps=4.0,
+        )
+        assert cmp is not None
+        assert cmp.baseline_runs == 1
+        assert cmp.baseline_ttft_p99_ms == pytest.approx(540.0)
+
+    def test_falls_back_to_all_baselines_when_none_are_contemporaneous(
+        self, run_result: RunResult
+    ) -> None:
+        aug = datetime(2026, 8, 19, 11, 0, tzinfo=UTC)
+        sep = datetime(2026, 9, 16, 12, 0, tzinfo=UTC)
+        runs = [
+            run_at(run_result, started=aug),
+            run_at(run_result, started=aug + timedelta(minutes=5)),
+            run_at(
+                run_result,
+                process=ArrivalProcess.CLOSED_LOOP,
+                rate=None,
+                concurrency=96,
+                started=sep,
+            ),
+        ]
+        cmp = process_comparison(
+            runs,
+            process=ArrivalProcess.CLOSED_LOOP,
+            baseline_config_id=run_result.config_id,
+            baseline_rate_rps=4.0,
+        )
+        assert cmp is not None
+        assert cmp.baseline_runs == 2

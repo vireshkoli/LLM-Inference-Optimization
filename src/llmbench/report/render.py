@@ -14,7 +14,11 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from llmbench.analysis.cost import best_under_sla, operating_points
-from llmbench.analysis.methodology import drift_comparison, process_comparison
+from llmbench.analysis.methodology import (
+    ProcessComparison,
+    drift_comparison,
+    process_comparison,
+)
 from llmbench.analysis.pareto import ParetoPoint, pareto_frontier
 from llmbench.analysis.plots import ParetoMarker
 from llmbench.schema import ArrivalProcess, QualityResult, RunResult, RunValidity
@@ -317,54 +321,83 @@ def render_into(path: Path, blocks: Mapping[str, str]) -> set[str]:
 def methodology_table(
     runs: Sequence[RunResult], *, baseline_config_id: str, rate_rps: float
 ) -> str:
-    """Coordinated omission and burstiness, each against its matched baseline.
+    """Burstiness against Poisson at one rate; closed loop at every matched rate.
+
+    The closed-loop exhibit is shown at each open-loop rate it was matched to,
+    because its result *changes sign* with load: indistinguishable below the
+    knee, several times worse at it. One row would have to pick a load, and
+    whichever it picked would misrepresent the other.
 
     Rows appear only for exhibits that have actually been run. A table that
     invented a row for an unexecuted run would be claiming a measurement.
     """
     lines = [
-        "| Arrival process | TTFT p50 | TTFT p95 | TTFT p99 | Throughput | vs Poisson (p99) |",
-        "|---|---|---|---|---|---|",
+        "| Arrival process | Matched to | TTFT p50 | TTFT p95 | TTFT p99 | Throughput "
+        "| Tail vs open-loop Poisson |",
+        "|---|---|---|---|---|---|---|",
     ]
-    baseline_shown = False
     rows = 0
 
-    for process, label in (
-        (ArrivalProcess.CLOSED_LOOP, "Closed loop (exhibit)"),
-        (ArrivalProcess.TRACE_REPLAY, "Azure trace replay"),
-    ):
-        cmp = process_comparison(
-            runs,
-            process=process,
-            baseline_config_id=baseline_config_id,
-            baseline_rate_rps=rate_rps,
-            label=label,
-        )
-        if cmp is None:
-            continue
-        if not baseline_shown:
-            lines.append(
-                f"| **Open-loop Poisson** (baseline) | {cmp.baseline_ttft_p50_ms:.0f} ms "
-                f"| {cmp.baseline_ttft_p95_ms:.0f} ms | {cmp.baseline_ttft_p99_ms:.0f} ms "
-                f"| {cmp.baseline_throughput:.0f} tok/s | — |"
-            )
-            baseline_shown = True
-        ratio = cmp.understatement_ratio("p99")
+    def verdict(cmp: ProcessComparison) -> str:
         if not cmp.comparable:
-            verdict = (
+            return (
                 f"not comparable — throughput {cmp.throughput_ratio:.0%} of baseline, "
                 f"so this measures the load, not the generator"
             )
-        elif not cmp.p99_significant:
-            verdict = (
-                f"indistinguishable ({cmp.ttft_p99_ms - cmp.baseline_ttft_p99_ms:+.0f} ms "
-                f"against ±{2 * cmp.p99_pooled_stderr_ms:.0f} ms)"
+        gap = cmp.ttft_p99_ms - cmp.baseline_ttft_p99_ms
+        if not cmp.p99_significant:
+            return (
+                f"indistinguishable ({gap:+.0f} ms against ±{2 * cmp.p99_pooled_stderr_ms:.0f} ms)"
             )
-        else:
-            verdict = f"{ratio:.2f}x {'understated' if ratio > 1 else 'worse'}"
+        ratio = cmp.understatement_ratio("p99")
+        if ratio > 1:
+            return f"**{ratio:.1f}x understated** (p99 {gap:+.0f} ms)"
+        return f"**{1 / ratio:.1f}x worse** (p99 {gap:+.0f} ms)"
+
+    trace = process_comparison(
+        runs,
+        process=ArrivalProcess.TRACE_REPLAY,
+        baseline_config_id=baseline_config_id,
+        baseline_rate_rps=rate_rps,
+        label="Azure trace replay",
+    )
+    if trace is not None:
         lines.append(
-            f"| {cmp.label} | {cmp.ttft_p50_ms:.0f} ms | {cmp.ttft_p95_ms:.0f} ms "
-            f"| {cmp.ttft_p99_ms:.0f} ms | {cmp.throughput:.0f} tok/s | {verdict} |"
+            f"| **Open-loop Poisson** (baseline) | {rate_rps:g} rps "
+            f"| {trace.baseline_ttft_p50_ms:.0f} ms | {trace.baseline_ttft_p95_ms:.0f} ms "
+            f"| {trace.baseline_ttft_p99_ms:.0f} ms | {trace.baseline_throughput:.0f} tok/s | — |"
+        )
+        lines.append(
+            f"| {trace.label} | {rate_rps:g} rps | {trace.ttft_p50_ms:.0f} ms "
+            f"| {trace.ttft_p95_ms:.0f} ms | {trace.ttft_p99_ms:.0f} ms "
+            f"| {trace.throughput:.0f} tok/s | {verdict(trace)} |"
+        )
+        rows += 1
+
+    # Every open-loop rate that has a throughput-matched closed-loop partner.
+    rates = sorted(
+        {
+            r.workload.request_rate_rps
+            for r in runs
+            if r.config_id == baseline_config_id
+            and r.workload.request_rate_rps is not None
+            and r.is_reportable
+        }
+    )
+    for rate in rates:
+        cmp = process_comparison(
+            runs,
+            process=ArrivalProcess.CLOSED_LOOP,
+            baseline_config_id=baseline_config_id,
+            baseline_rate_rps=rate,
+            label="Closed loop",
+        )
+        if cmp is None or not cmp.comparable:
+            continue
+        lines.append(
+            f"| {cmp.label} | {rate:g} rps ({cmp.baseline_ttft_p99_ms:.0f} ms p99) "
+            f"| {cmp.ttft_p50_ms:.0f} ms | {cmp.ttft_p95_ms:.0f} ms | {cmp.ttft_p99_ms:.0f} ms "
+            f"| {cmp.throughput:.0f} tok/s | {verdict(cmp)} |"
         )
         rows += 1
 
@@ -400,21 +433,58 @@ def drift_table(runs: Sequence[RunResult], *, config_id: str, rate_rps: float) -
 
 
 def crossvalidation_table(path: Path) -> str:
-    """Agreement with vLLM's own harness, read from a completed comparison."""
-    if not path.exists():
+    """Agreement with vLLM's own harness, matched and unmatched.
+
+    Two files: ``<stem>_matched.json`` from a run with both harnesses on
+    constant lengths, and ``<stem>.json`` from each sampling ShareGPT its own
+    way. The matched run is the check; the unmatched one is shown because its
+    disagreement is the reason matching was necessary, and a reader who sees
+    only the clean result would not know that.
+    """
+    matched = path.with_name(f"{path.stem}_matched{path.suffix}")
+    if not matched.exists() and not path.exists():
         return "_Cross-validation against `vllm bench serve` has not been run yet._"
 
-    payload = json.loads(path.read_text())
-    lines = [
-        f"One configuration (`{payload['config_id']}` at {payload['rate_rps']:g} rps) measured "
-        f"independently by vLLM's own `vllm bench serve`, against the same live server:",
-        "",
-        "| Metric | This harness | `vllm bench serve` | Δ | Agrees (±5 %) |",
-        "|---|---|---|---|---|",
-    ]
-    for m in payload["metrics"]:
-        lines.append(
-            f"| {m['metric']} | {m['ours']:.2f} {m['unit']} | {m['upstream']:.2f} {m['unit']} "
-            f"| {m['delta_pct']:+.1f} % | {'yes' if m['agrees'] else '**NO**'} |"
-        )
-    return "\n".join(lines)
+    def table(payload: dict[str, object]) -> list[str]:
+        rows = [
+            "| Metric | This harness | `vllm bench serve` | Δ | Agrees (±5 %) |",
+            "|---|---|---|---|---|",
+        ]
+        metrics = payload["metrics"]
+        assert isinstance(metrics, list)
+        for m in metrics:
+            flag = "yes" if m["agrees"] else ("no*" if m.get("length_sensitive") else "**NO**")
+            rows.append(
+                f"| {m['metric']} | {m['ours']:.2f} {m['unit']} | {m['upstream']:.2f} {m['unit']} "
+                f"| {m['delta_pct']:+.1f} % | {flag} |"
+            )
+        return rows
+
+    out: list[str] = []
+    if matched.exists():
+        m = json.loads(matched.read_text())
+        out += [
+            f"**Matched workload** — `{m['config_id']}` at {m['rate_rps']:g} rps, both harnesses "
+            f"on constant {m['fixed_input_tokens']}/{m['fixed_output_tokens']} input/output tokens "
+            f"against the same live server:",
+            "",
+            *table(m),
+            "",
+        ]
+    if path.exists():
+        u = json.loads(path.read_text())
+        ratio = u.get("output_tokens_per_request", {})
+        out += [
+            f"**Unmatched workload** — the same comparison with each harness sampling ShareGPT "
+            f"its own way. Ours drew {ratio.get('ours', 0):.0f} output tokens per request, "
+            f"upstream {ratio.get('upstream', 0):.0f} (ratio {ratio.get('ratio', 0):.2f}):",
+            "",
+            *table(u),
+            "",
+            r"\* length-sensitive: a workload difference alone moves this metric. The "
+            "throughput ratio predicted from output length and window alone is 1.494 against "
+            "a measured 1.500, and each harness's E2E matches its own TTFT + TPOT x (out - 1) "
+            "to within 0.05 %. The disagreement is the workload, not the code — which is why "
+            "the matched run above exists.",
+        ]
+    return "\n".join(out).rstrip()

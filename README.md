@@ -25,7 +25,7 @@ for a living can spot it in thirty seconds:
 | Common failure | What this repo does instead |
 |---|---|
 | "N tokens/sec" with no load level | Latency-vs-throughput **curve**, swept to saturation, knee identified |
-| Closed-loop load generator | **Open-loop, Poisson arrivals** — closed-loop suffers coordinated omission and understates the tail |
+| Closed-loop load generator | **Open-loop, Poisson arrivals.** A closed loop's offered load is a consequence of the server's speed, so it cannot measure the server against real traffic. *Measured here, the textbook direction was wrong: at matched throughput the closed loop reports a tail 3–4× worse near the knee, not better.* |
 | Only end-to-end latency | **TTFT, TPOT, e2e, token- and request-throughput reported separately** — otherwise you cannot tell prefill-bound from decode-bound |
 | Fixed 128-in / 128-out | Real length distributions sampled from **ShareGPT**, clamped to context, with the sampled distribution recorded in every result |
 | One run, no error bars | **≥3 repeats**, mean ± std on every point |
@@ -170,8 +170,8 @@ Cost assumes **$0.40/GPU-hour** (RunPod, https://www.runpod.io/pricing, accessed
 <!-- BEGIN:validity -->
 | Validity | Runs | Meaning |
 |---|---|---|
-| `valid` | 123 | reportable |
-| `oversubscribed` | 45 | offered load beyond capacity; latency reflects run duration |
+| `valid` | 187 | reportable |
+| `oversubscribed` | 57 | offered load beyond capacity; latency reflects run duration |
 <!-- END:validity -->
 
 No run was discarded for client saturation and none throttled. The `oversubscribed` records are
@@ -180,32 +180,22 @@ capacity, and a benchmark showing only its usable runs has hidden its own error 
 
 ![Latency vs throughput](results/figures/latency_vs_throughput.png)
 
-### What is not yet measured
+### Is the methodology itself right?
 
-Listed because a benchmark that shows only its finished work has told you less than it appears
-to. All six are **implemented, tested and queued**; they are waiting on GPU availability, since
-this is a shared machine. REPORT.md renders "has not been run yet" for each until it lands,
-rather than a placeholder number.
+Six runs exist only to test the method, not to rank a configuration. All six have been
+measured. REPORT.md §6 carries the generated tables; this is what they say.
 
-| Queued | What it establishes |
+| Test | Result |
 |---|---|
-| **Azure trace replay** | What the Poisson assumption itself costs at the tail, against real production inter-arrival times |
-| **Closed-loop exhibit** | Coordinated omission, demonstrated on matched throughput rather than asserted |
-| **Drift canary** | Bounds environmental drift across the sweep by re-running the first configuration last |
-| **Cross-validation vs `vllm bench serve`** | Agreement with an independent implementation — stronger evidence of correctness than any amount of self-written testing |
-| **Quality for the SGLang configurations** | SGLang currently appears on the latency and cost axes but not on the quality frontier |
-| **Rate ladder above 8 rps for INT8** | INT8-W8A8's true saturation point; it is the only configuration still healthy at the top of the current ladder |
+| **Cross-validation vs `vllm bench serve`** | Both harnesses on the same live server at matched lengths: every latency metric within 5 % (TTFT mean +3.5 %, TTFT p99 +4.9 %, TPOT p99 −1.6 %). The unmatched run had disagreed by up to +63 % — entirely the two harnesses sampling different output lengths, and shown as such. |
+| **Closed-loop exhibit** | *The repo's own premise was wrong in direction.* Coordinated omission predicts a closed loop understates the tail. Measured at matched throughput it never does: indistinguishable below the knee, **3–4× worse** at it. Open-loop is still correct — because a closed loop's load is a consequence of the server's speed — but the measurement had to supply the reason. |
+| **Azure trace replay** | Five independent windows against five Poisson seeds: p99 within +4 ms (±21). CV² 1.02, count dispersion ≈1.0 at every timescale. For this workload Poisson is a measured property of the traffic, not an assumption. |
+| **Drift canary** | The first configuration re-run at the end of the sweep: within the sweep's own repeat-to-repeat noise. |
+| **SGLang quality** | Same checkpoint, two engines, identical GSM8K to four decimals (0.7316 / 0.7316). |
+| **INT8 ceiling** | Saturates between 9 and 10 rps (2308 tok/s at 9), against 7–8 for every other configuration. The headline finding now has an upper bound. |
 
-One result from that work is already in, because characterising the trace does not need a GPU:
-**the published Azure conversation trace is very close to Poisson at this timescale** — a
-squared coefficient of variation of 1.02 against Poisson's 1.00, in a window matched to 4 rps.
-The expectation was that real traffic would be markedly burstier. It is not, at the rate and
-window this benchmark operates on, and being able to say so is the difference between assuming
-an arrival model and having checked it.
-
-The harness cross-check that *has* been done is internal consistency against a live engine
-(METHODOLOGY §5a): `TPOT p50 × 63 + TTFT p50 = 1995 ms` against an independently measured
-`E2E p50 = 1997 ms`.
+Two of those results were found by the exhibit contradicting what the repository claimed
+going in. They are reported as such rather than reworded to look intended.
 
 ---
 

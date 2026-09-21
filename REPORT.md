@@ -176,12 +176,12 @@ point is not an operating point anyone could provision for.
 | `vllm-awq-int4` | 6 rps | 1675 ± 0 tok/s | 363 ms | 25.4 ms | $0.0663 | 3 |
 | `vllm-awq-int4` | 7 rps | 1912 ± 0 tok/s | 468 ms | 54.5 ms | $0.0581 | 3 |
 | `vllm-awq-int4` | 8 rps | 2035 ± 2 tok/s | 3288 ms | 129.2 ms | $0.0546 | 3 |
-| `vllm-bf16` | 1 rps | 265 ± 0 tok/s | 142 ms | 32.3 ms | $0.4197 | 3 |
-| `vllm-bf16` | 2 rps | 566 ± 1 tok/s | 141 ms | 35.5 ms | $0.1963 | 3 |
-| `vllm-bf16` | 4 rps | 1028 ± 0 tok/s | 253 ms | 45.0 ms | $0.1081 | 3 |
-| `vllm-bf16` | 5 rps | 1284 ± 0 tok/s | 363 ms | 55.4 ms | $0.0865 | 3 |
-| `vllm-bf16` | 6 rps | 1539 ± 0 tok/s | 479 ms | 66.3 ms | $0.0722 | 3 |
-| `vllm-bf16` | 7 rps | 1747 ± 1 tok/s | 667 ms | 111.1 ms | $0.0636 | 3 |
+| `vllm-bf16` | 1 rps | 265 ± 0 tok/s | 168 ms | 32.6 ms | $0.4197 | 6 |
+| `vllm-bf16` | 2 rps | 565 ± 1 tok/s | 152 ms | 36.0 ms | $0.1965 | 6 |
+| `vllm-bf16` | 4 rps | 1052 ± 34 tok/s | 263 ms | 45.4 ms | $0.1056 | 11 |
+| `vllm-bf16` | 5 rps | 1284 ± 0 tok/s | 364 ms | 55.6 ms | $0.0865 | 6 |
+| `vllm-bf16` | 6 rps | 1539 ± 0 tok/s | 481 ms | 66.1 ms | $0.0722 | 6 |
+| `vllm-bf16` | 7 rps | 1748 ± 1 tok/s | 678 ms | 109.5 ms | $0.0636 | 6 |
 | `vllm-gptq-int4` | 1 rps | 286 ± 0 tok/s | 104 ms | 11.0 ms | $0.3886 | 3 |
 | `vllm-gptq-int4` | 2 rps | 605 ± 0 tok/s | 89 ms | 12.2 ms | $0.1836 | 3 |
 | `vllm-gptq-int4` | 4 rps | 1110 ± 0 tok/s | 198 ms | 17.2 ms | $0.1001 | 3 |
@@ -196,6 +196,7 @@ point is not an operating point anyone could provision for.
 | `vllm-int8-w8a8` | 6 rps | 1620 ± 0 tok/s | 276 ms | 37.6 ms | $0.0686 | 3 |
 | `vllm-int8-w8a8` | 7 rps | 1877 ± 0 tok/s | 330 ms | 47.4 ms | $0.0592 | 3 |
 | `vllm-int8-w8a8` | 8 rps | 2116 ± 1 tok/s | 459 ms | 66.7 ms | $0.0525 | 3 |
+| `vllm-int8-w8a8` | 9 rps | 2303 ± 6 tok/s | 2353 ms | 102.0 ms | $0.0482 | 3 |
 <!-- END:latency-table -->
 
 ### Quality
@@ -226,8 +227,8 @@ configuration is grossly broken, which is what they can actually support.
 <!-- BEGIN:validity -->
 | Validity | Runs | Meaning |
 |---|---|---|
-| `valid` | 123 | reportable |
-| `oversubscribed` | 45 | offered load beyond capacity; latency reflects run duration |
+| `valid` | 187 | reportable |
+| `oversubscribed` | 57 | offered load beyond capacity; latency reflects run duration |
 <!-- END:validity -->
 
 No run was discarded for client saturation, and no run throttled. The `oversubscribed`
@@ -244,21 +245,58 @@ None of these appear on the frontier: a trace replay and a closed-loop run carry
 rate, which is the field every aggregation keys on, so they are structurally excluded from
 the operating points above.
 
-### Coordinated omission, and what the Poisson assumption costs
+### The arrival process — what a closed loop gets wrong, and what Poisson costs
 
-Both exhibits face the same server and the same seeded prompts as the open-loop baseline;
-only the arrival process differs. The closed-loop pool size is chosen so achieved throughput
-matches, because a tail comparison across different offered loads measures the load, not the
-generator.
+Both exhibits face the same server and the same prompts as the open-loop baseline; only the
+arrival process differs. The closed-loop pool size is swept so that a throughput-matched point
+exists for each open-loop rate, because a tail comparison across different loads measures the
+load, not the generator. The trace replay is five independent non-overlapping windows against
+five independent Poisson seeds, interleaved, because one seeded schedule repeated three times
+measures the server's variability rather than the arrival process's.
 
 <!-- BEGIN:methodology-table -->
-_No methodology exhibits have been run yet._
+| Arrival process | Matched to | TTFT p50 | TTFT p95 | TTFT p99 | Throughput | Tail vs open-loop Poisson |
+|---|---|---|---|---|---|---|
+| **Open-loop Poisson** (baseline) | 4 rps | 160 ms | 304 ms | 538 ms | 1082 tok/s | — |
+| Azure trace replay | 4 rps | 159 ms | 313 ms | 542 ms | 1056 tok/s | indistinguishable (+4 ms against ±21 ms) |
+| Closed loop (N=8) | 1 rps (250 ms p99) | 91 ms | 199 ms | 402 ms | 252 tok/s | **1.6x worse** (p99 +151 ms) |
+| Closed loop (N=48) | 4 rps (538 ms p99) | 153 ms | 294 ms | 543 ms | 1040 tok/s | indistinguishable (+4 ms against ±21 ms) |
+| Closed loop (N=64) | 5 rps (623 ms p99) | 171 ms | 359 ms | 2159 ms | 1211 tok/s | **3.5x worse** (p99 +1536 ms) |
+| Closed loop (N=96) | 6 rps (714 ms p99) | 213 ms | 680 ms | 2672 ms | 1563 tok/s | **3.7x worse** (p99 +1957 ms) |
+| Closed loop (N=128) | 7 rps (988 ms p99) | 261 ms | 2348 ms | 3308 ms | 1733 tok/s | **3.3x worse** (p99 +2320 ms) |
 <!-- END:methodology-table -->
 
-A closed-loop generator issues its next request only when a previous one returns, so when the
-server slows the generator slows with it and the slow period is under-sampled. The periods
-that hurt most contribute the fewest samples. Any ratio above 1.0 in the last column is the
-size of that error, measured on this hardware rather than cited.
+**This repository's own premise was wrong in direction, and the exhibit is what showed it.**
+The textbook objection to closed-loop generators is *coordinated omission*: when the server
+stalls, a generator that waits for completions stops sampling, so the slow periods are
+under-represented and the reported tail is optimistic. That was the claim here, and it
+predicted that the closed-loop rows would *understate* the open-loop p99.
+
+Measured, they never do. Below the knee the two generators are indistinguishable; at and above
+it the closed loop reports a tail **three to four times worse** than open-loop Poisson at the
+same throughput. The mechanism is not coordinated omission but its opposite. A continuous-
+batching engine below saturation has no stalls to hide, so the classic error has nothing to
+act on. What the closed loop does instead is pin occupancy at a constant maximum: every new
+request arrives into a server already running N−1 others, so its prefill always competes with
+a full batch of decodes. Poisson arrivals at the same mean let occupancy fluctuate, and the
+requests that arrive into a lull get fast prefill. The closed loop cannot produce a lull.
+
+Open-loop remains the correct methodology — but for a reason the measurement had to supply.
+The argument is not that a closed loop flatters the server; on this stack it slanders it.
+The argument is that a closed loop's load is a *consequence of the server's speed*, so it
+cannot measure the server against any load a real deployment would actually receive. Both
+errors are the same error: the generator and the thing under test are coupled.
+
+The near-knee closed-loop rows (N = 96, 128) were measured on GPU 0 against an open-loop ladder
+measured on GPU 1. Both cards are the same model at the same locked clock, and the 4 rps row —
+measured on the same card as its baseline — shows the same null result below the knee, so the
+card cannot be what produces the sign at the knee. It is stated rather than hidden.
+
+**The Poisson assumption costs nothing measurable here.** The trace replay sits +4 ms above
+Poisson at p99, against a ±21 ms interval. This agrees with two properties of the trace itself:
+its inter-arrival CV² is 1.02 (Poisson: 1.00), and its count dispersion is ≈1.0 at every
+timescale from 0.5 s to 30 s. For this workload at this rate, Poisson is not an assumption; it
+is a measured property of the traffic.
 
 ### Environmental drift across the sweep
 
@@ -267,7 +305,12 @@ original within the sweep's own repeat-to-repeat noise, results measured hours a
 comparable; if it does not, every cross-configuration claim above is weakened.
 
 <!-- BEGIN:drift-table -->
-_The drift canary has not been run yet._
+| | First measurement | Re-run at end of sweep | Δ |
+|---|---|---|---|
+| TTFT p95 | 252.6 ms | 266.7 ms | +14.1 ms |
+| Throughput | 1028 tok/s | 1062 tok/s | +3.2 % |
+
+Repeat-to-repeat std of the original: ±36.7 ms. The re-run is within noise — environmental drift across the sweep is bounded.
 <!-- END:drift-table -->
 
 ### Agreement with an independent harness
@@ -277,7 +320,29 @@ against numpy, the arrival process against a KS test, TTFT against internal cons
 it can be true while the harness measures the wrong thing consistently.
 
 <!-- BEGIN:crossvalidation-table -->
-_Cross-validation against `vllm bench serve` has not been run yet._
+**Matched workload** — `vllm-bf16` at 4 rps, both harnesses on constant 256/256 input/output tokens against the same live server:
+
+| Metric | This harness | `vllm bench serve` | Δ | Agrees (±5 %) |
+|---|---|---|---|---|
+| TTFT mean | 174.32 ms | 168.38 ms | +3.5 % | yes |
+| TTFT p99 | 273.24 ms | 260.50 ms | +4.9 % | yes |
+| TPOT mean | 40.62 ms | 41.72 ms | -2.6 % | yes |
+| TPOT p99 | 45.18 ms | 45.90 ms | -1.6 % | yes |
+| E2E mean | 10531.72 ms | 10805.71 ms | -2.5 % | yes |
+| Output throughput | 927.64 tok/s | 977.33 tok/s | -5.1 % | no* |
+
+**Unmatched workload** — the same comparison with each harness sampling ShareGPT its own way. Ours drew 303 output tokens per request, upstream 192 (ratio 1.58):
+
+| Metric | This harness | `vllm bench serve` | Δ | Agrees (±5 %) |
+|---|---|---|---|---|
+| TTFT mean | 146.11 ms | 145.72 ms | +0.3 % | yes |
+| TTFT p99 | 385.01 ms | 291.33 ms | +32.2 % | **NO** |
+| TPOT mean | 39.06 ms | 37.69 ms | +3.6 % | yes |
+| TPOT p99 | 45.67 ms | 49.05 ms | -6.9 % | **NO** |
+| E2E mean | 11948.24 ms | 7350.23 ms | +62.6 % | no* |
+| Output throughput | 1028.17 tok/s | 685.51 tok/s | +50.0 % | no* |
+
+\* length-sensitive: a workload difference alone moves this metric. The throughput ratio predicted from output length and window alone is 1.494 against a measured 1.500, and each harness's E2E matches its own TTFT + TPOT x (out - 1) to within 0.05 %. The disagreement is the workload, not the code — which is why the matched run above exists.
 <!-- END:crossvalidation-table -->
 
 Both harnesses were given the same seed, rate, corpus, endpoint and `ignore_eos`, with
@@ -320,8 +385,10 @@ with the asterisk rather than without it.
 - **The quality axis is unresolved.** All four configurations lie inside one another's
   confidence intervals on both task benchmarks (§5). Perplexity separates them; task accuracy
   does not, and the Pareto frontier's quality ordering should not be read as significant.
-- **SGLang has no quality measurement.** Quality was run for the four vLLM configurations only,
-  so SGLang appears on the latency and cost axes but not on the frontier.
+- **SGLang has no perplexity.** GSM8K and IFEval were measured through SGLang and match vLLM
+  on the same checkpoint (0.7316 / 0.7316), but scoring a prompt needs `echo=true` with
+  `max_tokens=0`, a vLLM extension SGLang rejects with a 400. SGLang is on the frontier by task
+  score; its perplexity column is a gap rather than a guess.
 - **FP8 is absent by design, not by omission.** The A40 is sm_86 and has no FP8 tensor cores.
   vLLM will still *load* an FP8 checkpoint on Ampere by dequantizing to FP16 — it appears to
   work, yields weight-only compression, and delivers no compute speedup. Publishing that as
@@ -329,8 +396,14 @@ with the asterisk rather than without it.
 - **`ignore_eos=True`** forces every configuration to perform identical work, which is what
   makes the comparison fair and simultaneously makes the output lengths less realistic than the
   input lengths. The tradeoff is deliberate and stated in METHODOLOGY.md §2.
-- **The rate ladder tops out below INT8's capacity** (§4). INT8's true saturation point was not
-  found; it is above 8 rps.
+- **INT8's ceiling is between 9 and 10 rps.** 9 rps is valid at 2308 tok/s; 10 and 11 rps are
+  oversubscribed. The ladder was extended for INT8 alone because it was the only configuration
+  still healthy at 8 rps.
+- **The near-knee closed-loop rows were measured on a different physical GPU** from their
+  open-loop baseline (§6). Same model, same locked clock, and the same-card comparison below the
+  knee shows the same null; the confound cannot produce the sign at the knee, but it is there.
+- **The closed-loop exhibit contradicts this repository's stated premise** (§6). The document
+  says so where the premise was made rather than quietly rewording it.
 - **The cost figure is a public reference price, not an invoice.** The measurement GPU is a lab
   machine. Because every configuration runs on the same GPU, the price is a linear scalar and
   cannot reorder the ranking — which is why no price-sensitivity table appears here.

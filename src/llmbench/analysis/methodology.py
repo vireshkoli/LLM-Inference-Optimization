@@ -119,6 +119,46 @@ def _aggregate_ttft(runs: Sequence[RunResult]) -> tuple[float, float, float, flo
     )
 
 
+def _latest_session(runs: Sequence[RunResult], *, gap_h: float = 24.0) -> list[RunResult]:
+    """The most recent cluster of runs separated from earlier ones by ``gap_h``.
+
+    An exhibit may have been measured more than once as its design improved —
+    the trace replay was first run as one window repeated three times, then
+    redesigned as five independent windows. Pooling both would average a flawed
+    design into a sound one. The latest session is the one to report.
+    """
+    ordered = sorted(runs, key=lambda r: r.started_at)
+    session = [ordered[-1]]
+    for earlier, later in zip(reversed(ordered[:-1]), reversed(ordered[1:]), strict=True):
+        if (later.started_at - earlier.started_at).total_seconds() > gap_h * 3600:
+            break
+        session.append(earlier)
+    return session
+
+
+def _contemporaneous(
+    baseline: Sequence[RunResult], subject: Sequence[RunResult], *, window_h: float = 24.0
+) -> list[RunResult]:
+    """Baseline runs measured in the same session as the subject, if any.
+
+    Between-session variance can exceed the effect under test: vllm-bf16 at
+    4 rps measured p99 444 ± 97 ms in August and 326 ± 6 ms in September. A
+    comparison against a baseline from another session is therefore a
+    comparison against noise, and the contemporaneous baseline is preferred
+    whenever one exists. When none does — the near-knee closed-loop runs have
+    no same-session ladder — every baseline is used and the report says so.
+    """
+    lo = min(r.started_at for r in subject)
+    hi = max(r.started_at for r in subject)
+    same = [
+        r
+        for r in baseline
+        if abs((r.started_at - lo).total_seconds()) <= window_h * 3600
+        or abs((r.started_at - hi).total_seconds()) <= window_h * 3600
+    ]
+    return same or list(baseline)
+
+
 def process_comparison(
     runs: Sequence[RunResult],
     *,
@@ -126,8 +166,17 @@ def process_comparison(
     baseline_config_id: str,
     baseline_rate_rps: float,
     label: str | None = None,
+    concurrency: int | None = None,
 ) -> ProcessComparison | None:
     """Compare one arrival process against the matched open-loop Poisson run.
+
+    Args:
+        concurrency: For a closed-loop subject, the worker count to select.
+            Closed-loop runs exist at many concurrencies — the sweep that finds
+            the throughput-matched one produces a record per pool size — and
+            pooling them would average unmatched load levels into one number
+            that corresponds to nothing. ``None`` selects the concurrency whose
+            achieved throughput is closest to the baseline's.
 
     Returns ``None`` when either side is missing, rather than raising: the
     report is generated from whatever has been measured, and a methodology run
@@ -145,6 +194,29 @@ def process_comparison(
     ]
     if not subject or not baseline:
         return None
+
+    if process is ArrivalProcess.CLOSED_LOOP:
+        by_conc: dict[int, list[RunResult]] = {}
+        for r in subject:
+            if r.workload.concurrency is not None:
+                by_conc.setdefault(r.workload.concurrency, []).append(r)
+        if not by_conc:
+            return None
+        if concurrency is None:
+            target = summarize([r.output_token_throughput for r in baseline]).mean
+            concurrency = min(
+                by_conc,
+                key=lambda n: abs(
+                    summarize([r.output_token_throughput for r in by_conc[n]]).mean - target
+                ),
+            )
+        if concurrency not in by_conc:
+            return None
+        subject = by_conc[concurrency]
+        label = f"{label or 'closed loop'} (N={concurrency})"
+
+    subject = _latest_session(subject)
+    baseline = _contemporaneous(baseline, subject)
 
     p50, p95, p99, p99_std, throughput = _aggregate_ttft(subject)
     b50, b95, b99, b99_std, b_throughput = _aggregate_ttft(baseline)

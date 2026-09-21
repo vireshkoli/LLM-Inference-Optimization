@@ -8,7 +8,8 @@
       "upstream": 145.72049192696187,
       "unit": "ms",
       "delta_pct": 0.2692670924495877,
-      "agrees": true
+      "agrees": true,
+      "length_sensitive": false
     },
     {
       "metric": "TTFT p99",
@@ -16,7 +17,8 @@
       "upstream": 291.33235586807126,
       "unit": "ms",
       "delta_pct": 32.15551231636506,
-      "agrees": false
+      "agrees": false,
+      "length_sensitive": false
     },
     {
       "metric": "TPOT mean",
@@ -24,7 +26,8 @@
       "upstream": 37.68944151679551,
       "unit": "ms",
       "delta_pct": 3.6353164455462217,
-      "agrees": true
+      "agrees": true,
+      "length_sensitive": false
     },
     {
       "metric": "TPOT p99",
@@ -32,7 +35,8 @@
       "upstream": 49.04954192313279,
       "unit": "ms",
       "delta_pct": -6.897502997720695,
-      "agrees": false
+      "agrees": false,
+      "length_sensitive": false
     },
     {
       "metric": "E2E mean",
@@ -40,7 +44,8 @@
       "upstream": 7350.226884410303,
       "unit": "ms",
       "delta_pct": 62.556072338317946,
-      "agrees": false
+      "agrees": false,
+      "length_sensitive": true
     },
     {
       "metric": "Output throughput",
@@ -48,8 +53,18 @@
       "upstream": 685.5117868302151,
       "unit": "tok/s",
       "delta_pct": 49.98622463251212,
-      "agrees": false
+      "agrees": false,
+      "length_sensitive": true
     }
   ],
-  "all_agree": false
+  "all_agree": false,
+  "matched_lengths": false,
+  "fixed_input_tokens": null,
+  "fixed_output_tokens": null,
+  "output_tokens_per_request": {
+    "ours": 303.48333333333335,
+    "upstream": 192.11527777777778,
+    "ratio": 1.5796939048459042
+  },
+  "length_independent_agree": false
 }

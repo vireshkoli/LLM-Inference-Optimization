@@ -42,14 +42,27 @@ Load is generated **open-loop with Poisson arrivals**. Inter-arrival times are d
 `Exponential(1/λ)` and dispatched at their scheduled wall-clock instant *regardless of whether
 earlier requests have returned*.
 
-**Why not closed-loop.** A fixed-concurrency generator only issues a new request when a prior
-one completes. When the server slows, the generator slows with it, so the slow period is
-under-sampled — **coordinated omission**. The measured tail is then systematically optimistic,
-and the tail is precisely the number anyone cares about. A closed-loop run is *defined* in the
-sweep (`vllm-bf16-closed-loop`) as an exhibit that would demonstrate the size of this error on
-this hardware. It is implemented (`llmbench.loadgen.closed_loop`) and queued behind GPU
-availability; when it runs it is never reported as a headline result. The open-loop argument
-above stands on its own; the exhibit quantifies it.
+**Why not closed-loop — and why the usual reason turned out to be wrong here.** A
+fixed-concurrency generator only issues a new request when a prior one completes. The textbook
+objection is **coordinated omission**: when the server stalls, the generator stalls with it, the
+slow period is under-sampled, and the reported tail is optimistic. That was this document's
+claim, and the closed-loop exhibit (`vllm-bf16-closed-loop`) was built to measure the size of
+the error.
+
+It measured the opposite sign. At throughput-matched points the closed loop never understates
+the open-loop p99: below the knee the two are indistinguishable, and at 5–7 rps the closed loop
+reports a tail **3.3–3.7× worse** (REPORT.md §6). A continuous-batching engine below saturation
+has no stalls for coordinated omission to hide. What a closed loop does instead is hold
+occupancy at a constant maximum, so every new request's prefill competes with a full batch of
+decodes; Poisson arrivals at the same mean let occupancy fluctuate, and requests that land in
+a lull get fast prefill.
+
+The conclusion survives; the reason had to be replaced. Open-loop is correct not because a
+closed loop flatters the server but because a closed loop's offered load is a *consequence of
+the server's speed* — the generator and the thing under test are coupled, and a coupled
+generator cannot measure the server against any load a deployment would actually receive. On
+this stack that coupling produced a pessimistic tail rather than an optimistic one. Either way
+it is not the tail a real arrival process would see.
 
 The exhibit reuses `fire_one`, the open-loop generator's own request function, rather than
 reimplementing it. Two generators with two SSE parsers and two TTFT definitions would differ in
@@ -91,9 +104,10 @@ and length distribution changes batching behaviour completely.
   human/assistant turns, and the same source vLLM's own `benchmark_serving.py` uses, so numbers
   remain comparable to published work.
 - **Secondary:** an **Azure LLM Inference Trace** replay, supplying real production *arrival
-  timestamps* rather than assumed Poisson. The replay itself is queued behind GPU availability,
-  but the trace has already been characterised, and the result is worth stating before the
-  latency numbers arrive.
+  timestamps* rather than assumed Poisson. Measured as five independent non-overlapping
+  windows against five independent Poisson seeds, interleaved: p99 TTFT **+4 ms against a
+  ±21 ms interval** — indistinguishable. The trace was characterised first, and the replay
+  agreed with the characterisation.
 
   **The published Azure conversation trace is very close to Poisson at this timescale.** In a
   180 s window matched to 4 req/s, its inter-arrival times have a squared coefficient of
@@ -446,8 +460,17 @@ measurements against a live server — they are not replays of one run — and t
 real defect in either dispatch loop or percentile implementation would show. A larger
 disagreement is a finding, not noise.
 
-_Agreement figures are generated into REPORT.md §6 by `make crossvalidate`; the run is queued
-behind GPU availability._
+**Result.** With both harnesses on constant 256/256-token requests against the same live
+server, every latency metric agrees within 5 %: TTFT mean +3.5 %, TTFT p99 +4.9 %, TPOT mean
+−2.6 %, TPOT p99 −1.6 %, E2E −2.5 %. Output throughput sits at −5.1 %, a hair outside.
+
+The first attempt, with each harness sampling ShareGPT its own way, disagreed on E2E by +63 %
+and throughput by +50 % while agreeing on TTFT mean to 0.3 %. That shape was the diagnosis:
+ours drew 303 output tokens per request and upstream 192 from the same corpus, and the
+throughput ratio predicted from the lengths alone (1.494) matched the measured one (1.500).
+The harnesses agreed on everything they measured the same way and differed by exactly the
+workload. Both tables are in REPORT.md §6, because a reader shown only the clean result would
+not know the unclean one existed.
 
 ---
 

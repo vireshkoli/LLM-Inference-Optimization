@@ -6,12 +6,21 @@ and the same prompts, rather than asserted with a citation.
 
 **How it differs.** A fixed pool of ``concurrency`` workers each run a loop:
 issue a request, wait for it to complete, issue the next. The offered load is
-therefore a consequence of the server's speed. When the server slows, the
-generator slows with it, and the slow period is *under-sampled* — every worker
-is stuck inside one slow request instead of issuing the many requests that a
-real arrival process would have delivered during it. That is **coordinated
-omission**: the periods that hurt most contribute fewest samples, so the
-measured tail is systematically optimistic.
+therefore a consequence of the server's speed — the generator and the thing
+under test are coupled.
+
+**What that coupling did here was not what the textbook says.** The classic
+objection is *coordinated omission*: when the server stalls, the generator
+stalls with it, the slow period is under-sampled, and the reported tail is
+optimistic. This exhibit was built to measure that error and found the opposite
+sign. At throughput-matched points the closed loop never understates the
+open-loop p99; near the knee it reports a tail 3.3-3.7x *worse*. A
+continuous-batching engine below saturation has no stalls to hide, and what the
+closed loop does instead is hold occupancy at a constant maximum, so every new
+request's prefill competes with a full batch of decodes. Poisson arrivals at
+the same mean let occupancy fluctuate. Either way, a coupled generator does not
+measure the tail a real arrival process would see — which is the reason
+open-loop is used, and the reason this generator is an exhibit.
 
 **Why the comparison is fair.** The exhibit is run at a concurrency chosen so
 its *achieved* throughput matches an open-loop run's, and it draws from the same
