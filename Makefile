@@ -122,10 +122,15 @@ crossvalidate: data  ## Cross-check one config against vLLM's own harness (~0.5 
 report:  ## Regenerate every chart and table in README/REPORT from results JSON
 	uv run llmbench report --results results/runs --out .
 
+# Secrets and per-user settings come from .env (gitignored). `-include` so a
+# missing file is not an error for every other target.
+-include .env
+export HF_TOKEN
 HF_SPACE ?= vireshkoli/LLM-Inference-Optimization
 
 .PHONY: deploy-hf
-deploy-hf: report  ## Publish docs/ to a Hugging Face static Space (needs HF_TOKEN)
+deploy-hf: report  ## Publish docs/ to a Hugging Face static Space (token from .env)
+	@test -n "$(HF_TOKEN)" || { echo "HF_TOKEN is empty — fill it in .env"; exit 1; }
 	uv run python scripts/deploy_hf_space.py --space $(HF_SPACE)
 
 .PHONY: lock-clocks
