@@ -122,6 +122,12 @@ crossvalidate: data  ## Cross-check one config against vLLM's own harness (~0.5 
 report:  ## Regenerate every chart and table in README/REPORT from results JSON
 	uv run llmbench report --results results/runs --out .
 
+HF_SPACE ?= vireshkoli/LLM-Inference-Optimization
+
+.PHONY: deploy-hf
+deploy-hf: report  ## Publish docs/ to a Hugging Face static Space (needs HF_TOKEN)
+	uv run python scripts/deploy_hf_space.py --space $(HF_SPACE)
+
 .PHONY: lock-clocks
 lock-clocks:  ## Pin GPU clocks for measurement stability (requires sudo)
 	sudo ./scripts/lock_clocks.sh $(BENCH_GPU) lock
