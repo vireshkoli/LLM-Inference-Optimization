@@ -64,18 +64,19 @@ jobs:
       - run: uv python install 3.12
       - run: uv sync --dev
       # A config that only fails at GPU-launch time costs a lab session.
-      # Catch it here instead.
-      - name: Validate every sweep config
+      # Catch it here instead -- with the same pydantic models the runner uses,
+      # not just a YAML parse, which accepts any typo.
+      - name: Validate every sweep matrix, engine profile and the cost file
         run: |
+          for f in configs/*.yaml; do
+            [ "$f" = configs/cost.yaml ] && continue
+            uv run llmbench validate --config "$f"
+          done
           uv run python - <<'PY'
-          import sys, yaml, pathlib
-          ok = True
-          for p in sorted(pathlib.Path("configs").rglob("*.yaml")):
-              try:
-                  yaml.safe_load(p.read_text())
-                  print(f"ok   {p}")
-              except Exception as exc:  # noqa: BLE001
-                  ok = False
-                  print(f"FAIL {p}: {exc}")
-          sys.exit(0 if ok else 1)
+          from llmbench.config import load_cost_config, load_engine_profile
+          from llmbench.schema import EngineName
+          for engine in EngineName:
+              print(f"ok   {load_engine_profile(engine).name} profile")
+          load_cost_config("configs/cost.yaml")
+          print("ok   configs/cost.yaml")
           PY

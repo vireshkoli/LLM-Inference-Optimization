@@ -9,13 +9,18 @@ offered rate.
 from __future__ import annotations
 
 import random
-import statistics
 from pathlib import Path
 
 import pytest
 
 from llmbench.workload.arrivals import trace_schedule
-from llmbench.workload.trace import TraceRequest, load_azure_trace, select_window
+from llmbench.workload.trace import (
+    TraceRequest,
+    TraceWindow,
+    load_azure_trace,
+    select_window,
+    select_windows,
+)
 
 
 def write_trace(path: Path, rows: list[tuple[float, int, int]]) -> Path:
@@ -131,12 +136,20 @@ class TestBurstiness:
     def test_poisson_arrivals_score_one_at_any_rate(self) -> None:
         """The reference point the metric exists to provide. Exponential gaps
         must score 1.0 whether they arrive at 1 or 16 per second — a metric that
-        moved with the rate would make a fast trace look regular."""
+        moved with the rate would make a fast trace look regular.
+
+        Calls the property itself: an earlier version of this test re-derived
+        the formula from the raw gaps, so it passed whatever the property did.
+        """
         for rate in (1.0, 4.0, 16.0):
             rng = random.Random(11)
-            gaps = [rng.expovariate(rate) for _ in range(20000)]
-            mean = statistics.fmean(gaps)
-            assert statistics.variance(gaps) / mean**2 == pytest.approx(1.0, abs=0.05)
+            t = 0.0
+            requests = []
+            for _ in range(20000):
+                t += rng.expovariate(rate)
+                requests.append(TraceRequest(arrival_s=t, input_tokens=100, output_tokens=50))
+            window = TraceWindow(requests=tuple(requests), duration_s=t)
+            assert window.burstiness == pytest.approx(1.0, abs=0.05)
 
     def test_regular_arrivals_score_near_zero(self, tmp_path: Path) -> None:
         """Perfectly regular arrivals have zero inter-arrival variance, so the
@@ -166,3 +179,87 @@ class TestBurstiness:
         schedule = trace_schedule(select_window(rows, duration_s=20.0).timestamps_s)
         assert schedule.nominal_rate_rps is None
         assert schedule.offsets_s[0] == 0.0
+
+
+def two_regimes(
+    slow_s: float, fast_s: float, *, slow_gap: float, fast_gap: float
+) -> list[tuple[float, int, int]]:
+    """Steady arrivals: one gap for ``slow_s`` seconds, then another."""
+    rows: list[tuple[float, int, int]] = []
+    t = 0.0
+    while t < slow_s:
+        rows.append((t, 100, 50))
+        t += slow_gap
+    while t < slow_s + fast_s:
+        rows.append((t, 100, 50))
+        t += fast_gap
+    return rows
+
+
+class TestSeveralWindows:
+    def test_windows_are_distinct_and_do_not_overlap(self, tmp_path: Path) -> None:
+        """Regression. The best-matching window here sits late in the trace. The
+        selector searched the remaining trace for the best match but advanced its
+        cursor from the *start* of that remainder, so it found the same window on
+        every pass and returned it three times."""
+        rows = load_azure_trace(
+            write_trace(
+                tmp_path / "t.csv", two_regimes(200.0, 100.0, slow_gap=1 / 3.7, fast_gap=0.25)
+            )
+        )
+        windows = select_windows(rows, duration_s=20.0, count=3, target_rate_rps=4.0)
+        starts = [w.start_s for w in windows]
+        assert len(set(starts)) == 3
+        for i, a in enumerate(starts):
+            for b in starts[i + 1 :]:
+                assert abs(a - b) >= 20.0
+
+    def test_best_matches_are_taken_first(self, tmp_path: Path) -> None:
+        rows = load_azure_trace(
+            write_trace(
+                tmp_path / "t.csv", two_regimes(200.0, 100.0, slow_gap=1 / 3.7, fast_gap=0.25)
+            )
+        )
+        windows = select_windows(rows, duration_s=20.0, count=3, target_rate_rps=4.0)
+        # The 3.7 rps region is within tolerance too, but exact matches exist.
+        assert all(w.mean_rate_rps == pytest.approx(4.0, rel=0.01) for w in windows)
+        assert all(w.start_s + 20.0 > 200.0 for w in windows)
+
+    def test_windows_come_back_in_trace_order(self, tmp_path: Path) -> None:
+        rows = load_azure_trace(write_trace(tmp_path / "t.csv", steady(800, gap=0.25)))
+        windows = select_windows(rows, duration_s=20.0, count=5, target_rate_rps=4.0)
+        assert [w.start_s for w in windows] == sorted(w.start_s for w in windows)
+
+    def test_refuses_when_too_few_windows_fit(self, tmp_path: Path) -> None:
+        rows = load_azure_trace(write_trace(tmp_path / "t.csv", steady(200, gap=0.25)))
+        with pytest.raises(ValueError, match="supplied only 2 non-overlapping"):
+            select_windows(rows, duration_s=20.0, count=3, target_rate_rps=4.0)
+
+
+class TestRateMatching:
+    def window(self, tmp_path: Path) -> TraceWindow:
+        rows = load_azure_trace(write_trace(tmp_path / "t.csv", steady(400, gap=1 / 4.4)))
+        return select_window(rows, duration_s=20.0, target_rate_rps=4.0)
+
+    def test_scaling_hits_the_target_rate_exactly(self, tmp_path: Path) -> None:
+        scaled = self.window(tmp_path).scaled_to_rate(4.0)
+        assert scaled.mean_rate_rps == pytest.approx(4.0)
+
+    def test_scaling_leaves_burstiness_alone(self, tmp_path: Path) -> None:
+        """CV² is dimensionless, so a uniform stretch cannot change it."""
+        rows = load_azure_trace(
+            write_trace(
+                tmp_path / "b.csv",
+                [(i * 0.1 + (i // 10) * 2.0, 100, 50) for i in range(400)],
+            )
+        )
+        window = select_window(rows, duration_s=40.0)
+        assert window.scaled_to_rate(1.0).burstiness == pytest.approx(window.burstiness)
+
+    def test_scale_and_position_are_recorded(self, tmp_path: Path) -> None:
+        original = self.window(tmp_path)
+        scaled = original.scaled_to_rate(4.0)
+        assert scaled.time_scale == pytest.approx(original.mean_rate_rps / 4.0)
+        assert scaled.duration_s == pytest.approx(original.duration_s * scaled.time_scale)
+        assert scaled.start_s == original.start_s
+        assert len(scaled) == len(original)

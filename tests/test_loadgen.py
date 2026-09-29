@@ -255,3 +255,19 @@ class TestFullPipeline:
             f"dispatch lag p99 {lag.p99 * 1e3:.1f} ms against a "
             f"{mean_gap * 1e3:.1f} ms mean inter-arrival"
         )
+
+
+class TestDispatchOffsets:
+    @pytest.mark.asyncio
+    async def test_offset_is_schedule_plus_lag(self) -> None:
+        """Each record carries when it actually left, so a run's per-request
+        data can be laid out on the time axis after the fact."""
+        server = MockLLMServer(ttft_s=0.01, itl_s=0.001)
+        schedule = poisson_schedule(rate_rps=100.0, num_requests=10, seed=3)
+        async with client_for(server) as client:
+            result = await run_open_loop(schedule, specs(10), CONFIG, client=client)
+        for r in result.records:
+            assert r.dispatch_offset_s is not None
+            assert r.dispatch_offset_s == pytest.approx(
+                r.scheduled_offset_s + r.dispatch_lag_s, abs=5e-3
+            )

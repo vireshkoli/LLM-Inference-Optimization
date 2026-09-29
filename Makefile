@@ -145,8 +145,8 @@ unlock-clocks:  ## Restore default GPU clock behaviour
 # Stack
 # ---------------------------------------------------------------------------
 .PHONY: stack-up
-stack-up:  ## Bring up Prometheus + Grafana + DCGM exporter
-	docker compose -f docker/compose.full.yml up -d prometheus grafana dcgm-exporter
+stack-up:  ## Bring up Prometheus + Grafana (+ image renderer) + DCGM exporter
+	docker compose -f docker/compose.full.yml up -d prometheus grafana renderer dcgm-exporter
 
 .PHONY: stack-down
 stack-down:  ## Tear down the observability stack

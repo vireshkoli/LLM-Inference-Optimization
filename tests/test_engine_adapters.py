@@ -18,9 +18,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from llmbench.config import load_engine_profile
 from llmbench.engines.base import EngineLaunchSpec
 from llmbench.engines.sglang import SglangEngine
 from llmbench.engines.vllm import VllmEngine
+from llmbench.schema import EngineName
 
 # Verbatim from a real v0.26.0 startup, including the ASCII-art banner line.
 VLLM_BANNER_LOG = """\
@@ -54,6 +56,11 @@ def spec(**overrides: object) -> EngineLaunchSpec:
     return EngineLaunchSpec(**base)  # type: ignore[arg-type]
 
 
+def profile_spec(engine: EngineName, **overrides: object) -> EngineLaunchSpec:
+    """A spec carrying the committed profile's shared flags, as the runners build it."""
+    return spec(extra_args=dict(load_engine_profile(engine).args), **overrides)
+
+
 class TestVllmArguments:
     def test_model_is_positional_not_a_flag(self) -> None:
         """v0.26 deprecated `--model`; a real launch warned and then failed."""
@@ -67,7 +74,7 @@ class TestVllmArguments:
         Passing it caused `error: unrecognized arguments` and an immediate
         container exit.
         """
-        args = VllmEngine().server_args(spec())
+        args = VllmEngine().server_args(profile_spec(EngineName.VLLM))
         assert "--no-enable-log-requests" in args
         assert "--disable-log-requests" not in args
 
@@ -78,7 +85,7 @@ class TestVllmArguments:
 
     def test_carries_the_parity_critical_settings(self) -> None:
         """These must match across engines or the comparison is meaningless."""
-        args = VllmEngine().server_args(spec())
+        args = VllmEngine().server_args(profile_spec(EngineName.VLLM))
         for flag, value in [
             ("--max-model-len", "4096"),
             ("--gpu-memory-utilization", "0.9"),
@@ -139,4 +146,79 @@ class TestSglangArguments:
 
     def test_enables_metrics_explicitly(self) -> None:
         """Prometheus metrics are opt-in on SGLang, unlike vLLM."""
-        assert "--enable-metrics" in SglangEngine().server_args(spec(config_id="sglang-bf16"))
+        args = SglangEngine().server_args(profile_spec(EngineName.SGLANG, config_id="sglang-bf16"))
+        assert "--enable-metrics" in args
+
+
+class TestProfileArguments:
+    """The shared flags come from configs/engines/*.yaml, not from code.
+
+    They used to be hard-coded in the adapters while the YAML listed the same
+    flags and was never read, so editing the file changed nothing. Moving them
+    must not change what the engines are launched with: the full command line
+    is pinned here, exactly as every committed result was produced.
+    """
+
+    def test_vllm_command_line_is_unchanged(self) -> None:
+        assert VllmEngine().server_args(profile_spec(EngineName.VLLM)) == [
+            "meta-llama/Llama-3.1-8B-Instruct",
+            "--revision",
+            "0e9e39f249a16976918f6564b8830bc894c89659",
+            "--port",
+            "8000",
+            "--host",
+            "0.0.0.0",
+            "--max-model-len",
+            "4096",
+            "--gpu-memory-utilization",
+            "0.9",
+            "--max-num-seqs",
+            "256",
+            "--no-enable-log-requests",
+            "--seed",
+            "0",
+        ]
+
+    def test_sglang_command_line_is_unchanged(self) -> None:
+        args = SglangEngine().server_args(profile_spec(EngineName.SGLANG, config_id="sglang-bf16"))
+        assert args[args.index("--max-running-requests") :] == [
+            "--max-running-requests",
+            "256",
+            "--enable-metrics",
+            "--random-seed",
+            "0",
+        ]
+
+    def test_without_the_profile_nothing_is_added(self) -> None:
+        """No hidden defaults: an adapter adds only what the spec carries."""
+        args = VllmEngine().server_args(spec())
+        assert "--seed" not in args
+        assert "--no-enable-log-requests" not in args
+
+
+class TestVersionFallback:
+    def test_version_comes_from_the_tag_when_the_log_has_none(self) -> None:
+        """SGLang prints no version at start-up, which left 48 records saying
+        'unknown'. The tag names the release; the digest pins the build."""
+        from llmbench.engines.base import _version_from_tag  # noqa: PLC0415
+
+        assert _version_from_tag("v0.5.17-cu129") == "0.5.17"
+        assert _version_from_tag("v0.26.0") == "0.26.0"
+        assert _version_from_tag("latest") is None
+
+
+class TestNetworkExposure:
+    def test_engine_api_is_never_published_on_every_interface(self) -> None:
+        """The OpenAI API has no authentication; on a shared machine it must not
+        listen on every interface. By default it is published on loopback only."""
+        args = VllmEngine().docker_args(spec())
+        published = [args[i + 1] for i, a in enumerate(args) if a == "-p"]
+        assert published == ["127.0.0.1:8000:8000"]
+
+    def test_bridge_gateway_is_added_for_the_metrics_stack(self) -> None:
+        """Prometheus scrapes host.docker.internal, i.e. the Docker bridge
+        gateway -- local to the machine, unlike 0.0.0.0."""
+        args = VllmEngine().docker_args(spec(publish_addresses=("127.0.0.1", "172.17.0.1")))
+        published = [args[i + 1] for i, a in enumerate(args) if a == "-p"]
+        assert published == ["127.0.0.1:8000:8000", "172.17.0.1:8000:8000"]
+        assert not any(p.startswith("0.0.0.0") or p == "8000:8000" for p in published)

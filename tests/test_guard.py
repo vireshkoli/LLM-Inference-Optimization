@@ -149,3 +149,69 @@ class TestPolicyConfiguration:
             **healthy(dispatch_lags_s=[0.25] * 1000, mean_interarrival_s=None)  # type: ignore[arg-type]
         )
         assert any("250.0 ms" in n for n in assessment.notes)
+
+
+class TestOversubscription:
+    """Untested until v0.2.3, though 57 committed runs carry this verdict."""
+
+    def test_falling_short_of_the_offered_rate_is_oversubscription(self) -> None:
+        assessment = assess_validity(
+            **healthy(offered_rate_rps=8.0, achieved_rate_rps=6.0)  # type: ignore[arg-type]
+        )
+        assert assessment.validity is RunValidity.OVERSUBSCRIBED
+        assert any("achieved only 6.00 of 8.00" in n for n in assessment.notes)
+
+    def test_eighty_percent_is_the_boundary(self) -> None:
+        kept_up = assess_validity(
+            **healthy(offered_rate_rps=8.0, achieved_rate_rps=6.4)  # type: ignore[arg-type]
+        )
+        fell_behind = assess_validity(
+            **healthy(offered_rate_rps=8.0, achieved_rate_rps=6.39)  # type: ignore[arg-type]
+        )
+        assert kept_up.validity is RunValidity.VALID
+        assert fell_behind.validity is RunValidity.OVERSUBSCRIBED
+
+    def test_it_outranks_client_saturation(self) -> None:
+        """Past capacity thousands of requests are in flight, which alone
+        induces dispatch lag in any client; the lag is a symptom there."""
+        assessment = assess_validity(
+            **healthy(  # type: ignore[arg-type]
+                offered_rate_rps=24.0,
+                achieved_rate_rps=6.0,
+                dispatch_lags_s=[0.2] * 1000,
+                mean_interarrival_s=1 / 24,
+            )
+        )
+        assert assessment.validity is RunValidity.OVERSUBSCRIBED
+        assert any("dispatch lag" in n for n in assessment.notes)
+
+    def test_processes_without_an_offered_rate_cannot_be_oversubscribed(self) -> None:
+        """Trace replay and the closed loop carry no offered rate."""
+        assessment = assess_validity(
+            **healthy(offered_rate_rps=None, achieved_rate_rps=1.0)  # type: ignore[arg-type]
+        )
+        assert assessment.validity is RunValidity.VALID
+
+
+class TestLagRelativeToLatency:
+    def test_lag_negligible_against_the_latency_is_ignored(self) -> None:
+        """80 ms of lag breaks both absolute and relative ceilings, but against
+        a 17 s TTFT it is 0.5 % of what is being measured."""
+        assessment = assess_validity(
+            **healthy(  # type: ignore[arg-type]
+                dispatch_lags_s=[0.08] * 1000,
+                mean_interarrival_s=0.125,
+                observed_latency_s=17.0,
+            )
+        )
+        assert assessment.validity is RunValidity.VALID
+
+    def test_the_same_lag_against_a_short_latency_counts(self) -> None:
+        assessment = assess_validity(
+            **healthy(  # type: ignore[arg-type]
+                dispatch_lags_s=[0.08] * 1000,
+                mean_interarrival_s=0.125,
+                observed_latency_s=0.2,
+            )
+        )
+        assert assessment.validity is RunValidity.CLIENT_SATURATED

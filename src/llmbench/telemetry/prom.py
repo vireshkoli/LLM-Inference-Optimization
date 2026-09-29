@@ -1,12 +1,16 @@
 """Scrape the engine's own Prometheus endpoint.
 
-Recorded **alongside** the client-side measurements, never instead of them. The
-distinction matters: a server cannot observe the queueing delay a client
-experiences, and a benchmark that trusts the server's self-report inherits every
-blind spot in the server's instrumentation. The published TTFT and TPOT come
-from the load generator; these counters are kept so the two can be reconciled,
-and so engine-internal state that the client genuinely cannot see — KV-cache
-occupancy, scheduler queue depth, preemptions — travels with each result.
+Meant to be read **alongside** the client-side measurements, never instead of
+them: a server cannot observe the queueing delay a client experiences, and a
+benchmark that trusts the server's self-report inherits every blind spot in the
+server's instrumentation. The published TTFT and TPOT come from the load
+generator.
+
+Not wired into the results: a ``RunResult`` carries no engine counters. The
+engines' metrics reach the Prometheus/Grafana stack in ``docker/`` directly;
+this parser is a tested building block for reconciling the two by hand, and for
+recording engine state -- KV-cache occupancy, queue depth, preemptions -- in a
+future schema version.
 
 Parsing is a deliberately small subset of the Prometheus text format: counters
 and gauges only. Histograms are left to Grafana, which already does that well.
@@ -79,7 +83,9 @@ _FIELD_BY_METRIC = {
     "sglang:num_running_reqs": "num_requests_running",
     "sglang:num_queue_reqs": "num_requests_waiting",
     "sglang:token_usage": "kv_cache_usage_perc",
-    "sglang:gen_throughput": "generation_tokens_total",
+    # Not sglang:gen_throughput: that is a tokens-per-second gauge, and mapping
+    # it onto a cumulative counter made `delta()` subtract two rates.
+    "sglang:generation_tokens_total": "generation_tokens_total",
 }
 
 

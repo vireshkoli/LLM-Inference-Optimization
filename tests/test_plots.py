@@ -65,7 +65,9 @@ class TestAggregation:
         assert len(points) == 1
         assert points[0].repeats == 3
         assert points[0].latency_mean_ms == pytest.approx(110.0)
-        assert points[0].latency_std_ms > 0
+        # Repeats are a sample of runs: n - 1, not n. (100, 110, 120) has a
+        # sample std of exactly 10 ms; the population formula gives 8.2.
+        assert points[0].latency_std_ms == pytest.approx(10.0)
         assert points[0].throughput_mean == pytest.approx(700.0)
 
     def test_excludes_invalid_runs(self, run_result: RunResult) -> None:

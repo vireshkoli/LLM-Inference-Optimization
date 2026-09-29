@@ -40,8 +40,20 @@ class KernelMismatchError(RuntimeError):
         )
 
 
+#: A line that names a kernel in order to say it is *not* being used. The
+#: failure this module exists to catch prints exactly such a line --
+#: "gptq_marlin is not supported for this config, falling back to ..." -- and a
+#: pattern for the fast kernel matched it, so the assertion passed on the one
+#: log it was written to reject. Such lines are removed before matching.
+_NEGATED_KERNEL_LINE = re.compile(r"(?i)not supported|unsupported|fall(?:s|ing)?[ -]?back")
+
+
 def detect_kernel(log_text: str, patterns: Mapping[str, str]) -> str | None:
     """Return the first kernel name whose pattern matches the log.
+
+    Lines reporting that a kernel is unsupported or being fallen back from are
+    ignored first, so a kernel is only detected from a line that says it is in
+    use.
 
     Args:
         log_text: Engine startup output.
@@ -52,8 +64,11 @@ def detect_kernel(log_text: str, patterns: Mapping[str, str]) -> str | None:
     Returns:
         The matched kernel name, or ``None`` if nothing matched.
     """
+    usable = "\n".join(
+        line for line in log_text.splitlines() if not _NEGATED_KERNEL_LINE.search(line)
+    )
     for name, pattern in patterns.items():
-        if re.search(pattern, log_text):
+        if re.search(pattern, usable):
             return name
     return None
 

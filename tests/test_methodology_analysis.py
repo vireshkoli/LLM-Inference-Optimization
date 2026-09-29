@@ -225,6 +225,33 @@ class TestDriftCanary:
             is None
         )
 
+    def test_later_sessions_are_not_pooled_into_the_canary(self, run_result: RunResult) -> None:
+        """Regression. Splitting on the single largest gap put every run after
+        it into the "re-run" group, so five arrival-study runs made a week after
+        the canary were averaged into it. The canary is the next session only."""
+        t0 = datetime(2026, 8, 19, 10, 0, tzinfo=UTC)
+        canary = t0 + timedelta(days=18)
+        later = t0 + timedelta(days=27)
+        runs = [
+            run_at(run_result, ttft_ms=(100.0, 200.0, 300.0), started=t0),
+            run_at(run_result, ttft_ms=(100.0, 210.0, 300.0), started=t0 + timedelta(minutes=4)),
+            run_at(run_result, ttft_ms=(100.0, 204.0, 300.0), started=canary),
+            run_at(
+                run_result, ttft_ms=(100.0, 206.0, 300.0), started=canary + timedelta(minutes=4)
+            ),
+            *(
+                run_at(
+                    run_result, ttft_ms=(100.0, 300.0, 400.0), started=later + timedelta(minutes=m)
+                )
+                for m in (0, 7, 14, 21, 28)
+            ),
+        ]
+        drift = drift_comparison(
+            runs, config_id=run_result.config_id, canary_label="drift-canary", rate_rps=4.0
+        )
+        assert drift is not None
+        assert drift.later_ttft_p95_ms == pytest.approx(205.0)
+
     def test_single_measurement_yields_none(self, run_result: RunResult) -> None:
         assert (
             drift_comparison(

@@ -12,10 +12,12 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from llmbench.analysis.cost import ConfigOperatingPoint, best_under_sla, operating_points
 from llmbench.analysis.methodology import (
     ProcessComparison,
+    _latest_session,
     drift_comparison,
     process_comparison,
 )
@@ -29,10 +31,12 @@ __all__ = [
     "crossvalidation_table",
     "drift_table",
     "engine_axis_table",
+    "findings_summary",
     "headline_facts",
     "latency_table",
     "load_quality",
     "load_runs",
+    "methodology_summary",
     "methodology_table",
     "pareto_markers",
     "quality_scores",
@@ -161,13 +165,29 @@ def write_summary_json(runs: Sequence[RunResult], out_path: Path, gpu_hourly_usd
     return out_path
 
 
-def cost_note(gpu_hourly_usd: float, vendor: str, url: str, accessed: str) -> str:
-    return (
+def cost_note(
+    gpu_hourly_usd: float,
+    vendor: str,
+    url: str,
+    accessed: str,
+    alternates: Sequence[tuple[str, float]] = (),
+) -> str:
+    note = (
         f"Cost assumes **${gpu_hourly_usd:.2f}/GPU-hour** ({vendor}, {url}, accessed {accessed}). "
         f"The benchmark GPU is a lab machine with no invoice, so this is an assumption. "
         f"Because every configuration runs on the same GPU, the hourly rate is a linear scalar "
         f"and the *ranking* is invariant to it — there is no crossover price."
     )
+    if alternates:
+        listed = ", ".join(
+            f"{label} at ${price:.2f} (x{price / gpu_hourly_usd:.2f})"
+            for label, price in alternates
+        )
+        note += (
+            f" At the alternate prices in the cost file — {listed} — every cost scales by "
+            f"that factor."
+        )
+    return note
 
 
 #: Quality axis for the headline chart. GSM8K strict-match is generative and
@@ -410,6 +430,12 @@ def methodology_table(
     return "\n".join(lines)
 
 
+def _signed(value: float, digits: int = 1) -> str:
+    """``+1.2``/``-1.2`` without the ``-0.0`` that rounding a tiny negative gives."""
+    rounded = round(value, digits)
+    return f"{(rounded or 0.0):+.{digits}f}"
+
+
 def drift_table(runs: Sequence[RunResult], *, config_id: str, rate_rps: float) -> str:
     """Whether the environment moved across the sweep."""
     drift = drift_comparison(runs, config_id=config_id, canary_label=config_id, rate_rps=rate_rps)
@@ -428,12 +454,235 @@ def drift_table(runs: Sequence[RunResult], *, config_id: str, rate_rps: float) -
             f"| TTFT p95 | {drift.first_ttft_p95_ms:.1f} ms | {drift.later_ttft_p95_ms:.1f} ms "
             f"| {drift.ttft_drift_ms:+.1f} ms |",
             f"| Throughput | {drift.first_throughput:.0f} tok/s "
-            f"| {drift.later_throughput:.0f} tok/s | {drift.throughput_drift_pct:+.1f} % |",
+            f"| {drift.later_throughput:.0f} tok/s | {_signed(drift.throughput_drift_pct)} % |",
             "",
             f"Repeat-to-repeat std of the original: ±{drift.first_ttft_std_ms:.1f} ms. "
             f"The re-run is {verdict}.",
         ]
     )
+
+
+#: The note the runner records for every trace replay (runner._trace_window_note).
+_TRACE_NOTE = re.compile(
+    r"trace window (?P<start>[\d.]+)-[\d.]+ s of the trace: .*? time-scaled "
+    r"x(?P<scale>[\d.]+) to [\d.]+ rps; CV\^2 (?P<cv2>[\d.]+)"
+)
+
+
+def _closed_loop_summary(runs: Sequence[RunResult], *, baseline_config_id: str) -> str | None:
+    rates = sorted(
+        {
+            r.workload.request_rate_rps
+            for r in runs
+            if r.config_id == baseline_config_id
+            and r.workload.request_rate_rps is not None
+            and r.is_reportable
+        }
+    )
+    parts: list[str] = []
+    better = 0
+    for rate in rates:
+        cmp = process_comparison(
+            runs,
+            process=ArrivalProcess.CLOSED_LOOP,
+            baseline_config_id=baseline_config_id,
+            baseline_rate_rps=rate,
+            label="closed loop",
+        )
+        if cmp is None or not cmp.comparable:
+            continue
+        n = re.search(r"N=(\d+)", cmp.label)
+        where = f"{rate:g} rps (N={n.group(1)})" if n else f"{rate:g} rps"
+        if not cmp.p99_significant:
+            parts.append(f"{where} indistinguishable")
+            continue
+        ratio = cmp.understatement_ratio("p99")
+        if ratio > 1:
+            better += 1
+            parts.append(f"{where} {ratio:.1f}x better")
+        else:
+            parts.append(f"{where} {1 / ratio:.1f}x worse")
+    if not parts:
+        return None
+    verdict = (
+        "never reported a better tail than the open loop"
+        if better == 0
+        else f"reported a better tail at {better} of {len(parts)} matched rates"
+    )
+    return (
+        f"p99 TTFT at matched throughput, closed against open loop: {'; '.join(parts)}. "
+        f"Coordinated omission predicts a closed loop flatters the tail; here it {verdict}."
+    )
+
+
+def _trace_summary(
+    runs: Sequence[RunResult], *, baseline_config_id: str, rate_rps: float
+) -> str | None:
+    cmp = process_comparison(
+        runs,
+        process=ArrivalProcess.TRACE_REPLAY,
+        baseline_config_id=baseline_config_id,
+        baseline_rate_rps=rate_rps,
+        label="trace",
+    )
+    if cmp is None:
+        return None
+    latest = _latest_session(
+        [r for r in runs if r.workload.arrival_process is ArrivalProcess.TRACE_REPLAY]
+    )
+    found = [m for r in latest for n in r.validity_notes if (m := _TRACE_NOTE.search(n))]
+    starts = {m["start"] for m in found}
+    if found:
+        scales = [float(m["scale"]) for m in found]
+        cv2 = [float(m["cv2"]) for m in found]
+        described = (
+            f"{len(starts)} distinct non-overlapping windows (time-scaled x{min(scales):.2f}-"
+            f"x{max(scales):.2f} to {rate_rps:g} rps; CV² {min(cv2):.2f}-{max(cv2):.2f})"
+        )
+    else:
+        described = f"{cmp.runs} replays of the trace"
+    gap = cmp.ttft_p99_ms - cmp.baseline_ttft_p99_ms
+    band = 2 * cmp.p99_pooled_stderr_ms
+    verdict = (
+        "indistinguishable: at this rate the recorded traffic costs the tail no more than Poisson"
+        if not cmp.p99_significant
+        else ("worse than Poisson" if gap > 0 else "better than Poisson")
+    )
+    return (
+        f"{described} against {cmp.baseline_runs} Poisson draws: p99 TTFT {gap:+.0f} ms "
+        f"against ±{band:.0f} ms — {verdict}."
+    )
+
+
+def methodology_summary(
+    runs: Sequence[RunResult],
+    quality: Sequence[QualityResult],
+    *,
+    crossvalidation_path: Path,
+    baseline_config_id: str,
+    rate_rps: float,
+) -> str:
+    """README's one-line verdict for each run that tests the method itself.
+
+    Generated, like the tables it summarises: this table was typed once, and by
+    the time of the audit it described five independent trace windows that
+    were one window replayed five times.
+    """
+    rows: list[tuple[str, str]] = []
+
+    matched = crossvalidation_path.with_name(
+        f"{crossvalidation_path.stem}_matched{crossvalidation_path.suffix}"
+    )
+    if matched.exists():
+        m = json.loads(matched.read_text())
+        agree = sum(1 for x in m["metrics"] if x["agrees"])
+        deltas = ", ".join(f"{x['metric']} {x['delta_pct']:+.1f} %" for x in m["metrics"])
+        lengths = f"{m['fixed_input_tokens']}/{m['fixed_output_tokens']}"
+        text = (
+            f"Same live server, constant {lengths}-token requests at {m['rate_rps']:g} rps: "
+            f"{agree} of {len(m['metrics'])} metrics within ±5 % ({deltas})."
+        )
+        if crossvalidation_path.exists():
+            u = json.loads(crossvalidation_path.read_text())
+            worst = max(u["metrics"], key=lambda x: abs(x["delta_pct"]))
+            tokens = u.get("output_tokens_per_request", {})
+            text += (
+                f" Sampling lengths independently, the gap reached {worst['delta_pct']:+.0f} % "
+                f"({worst['metric']}) — the harnesses drew {tokens.get('ours', 0):.0f} and "
+                f"{tokens.get('upstream', 0):.0f} output tokens per request."
+            )
+        rows.append(("**Cross-validation vs `vllm bench serve`**", text))
+
+    closed = _closed_loop_summary(runs, baseline_config_id=baseline_config_id)
+    if closed:
+        rows.append(("**Closed-loop exhibit**", closed))
+
+    trace = _trace_summary(runs, baseline_config_id=baseline_config_id, rate_rps=rate_rps)
+    if trace:
+        rows.append(("**Azure trace replay**", trace))
+
+    drift = drift_comparison(
+        runs, config_id=baseline_config_id, canary_label=baseline_config_id, rate_rps=rate_rps
+    )
+    if drift:
+        rows.append(
+            (
+                "**Drift canary**",
+                f"`{baseline_config_id}` re-measured at the end of the sweep: p95 TTFT "
+                f"{drift.first_ttft_p95_ms:.0f} → {drift.later_ttft_p95_ms:.0f} ms "
+                f"({drift.ttft_drift_ms:+.0f} ms; twice the original's std is "
+                f"{2 * drift.first_ttft_std_ms:.0f} ms), throughput "
+                f"{_signed(drift.throughput_drift_pct)} % — "
+                f"{'within' if drift.within_noise else 'outside'} the sweep's own noise.",
+            )
+        )
+
+    scores = quality_scores(quality)
+    pairs = [
+        (label, scores[v][0], scores[s][0])
+        for label, v, s in (
+            ("BF16", "vllm-bf16", "sglang-bf16"),
+            ("AWQ", "vllm-awq-int4", "sglang-awq-int4"),
+        )
+        if v in scores and s in scores
+    ]
+    if pairs:
+        listed = "; ".join(f"{label} {v:.4f} vs {s:.4f}" for label, v, s in pairs)
+        rows.append(
+            ("**Same checkpoint, two engines**", f"GSM8K strict, vLLM vs SGLang: {listed}.")
+        )
+
+    pts = operating_points(runs, 1.0)
+    int8 = sorted(pts.get("vllm-int8-w8a8", []), key=lambda p: p.rate_rps)
+    over = sorted(
+        {
+            r.workload.request_rate_rps
+            for r in runs
+            if r.config_id == "vllm-int8-w8a8"
+            and r.validity is RunValidity.OVERSUBSCRIBED
+            and r.workload.request_rate_rps is not None
+        }
+    )
+    others = [
+        max(p.rate_rps for p in pts[c])
+        for c in pts
+        if c.startswith("vllm-") and c != "vllm-int8-w8a8"
+    ]
+    if len(int8) >= 2 and over and others:
+        top, below = int8[-1], int8[-2]
+        rows.append(
+            (
+                "**INT8 ceiling**",
+                f"Valid up to {top.rate_rps:g} rps ({top.throughput_tokens_s:.0f} tok/s; p95 TTFT "
+                f"{top.ttft_p95_s * 1e3:.0f} ms, against {below.ttft_p95_s * 1e3:.0f} ms at "
+                f"{below.rate_rps:g} rps), oversubscribed from {over[0]:g} rps. The other vLLM "
+                f"configurations are valid up to {min(others):g}-{max(others):g} rps.",
+            )
+        )
+
+    if not rows:
+        return "_No methodology runs have been measured yet._"
+    return "\n".join(
+        ["| Test | Result |", "|---|---|", *(f"| {test} | {result} |" for test, result in rows)]
+    )
+
+
+def _e2e_identity_error_pct(payload: Mapping[str, Any], side: str) -> float:
+    """How far mean E2E is from mean TTFT + mean TPOT x (mean output - 1), in %.
+
+    Per request, E2E = TTFT + TPOT x (n - 1) by definition; for means it holds
+    only approximately, since output length varies. A harness whose timing were
+    broken would miss it by far more than that approximation.
+    """
+    by_metric = {m["metric"]: m for m in payload["metrics"]}
+    tokens = float(payload.get("output_tokens_per_request", {}).get(side, 0.0))
+    e2e = float(by_metric["E2E mean"][side])
+    if not tokens or not e2e:
+        return float("nan")
+    rebuilt = float(by_metric["TTFT mean"][side]) + float(by_metric["TPOT mean"][side]) * (
+        tokens - 1
+    )
+    return abs(rebuilt / e2e - 1.0) * 100.0
 
 
 def crossvalidation_table(path: Path) -> str:
@@ -456,8 +705,16 @@ def crossvalidation_table(path: Path) -> str:
         ]
         metrics = payload["metrics"]
         assert isinstance(metrics, list)
+        # A length-sensitive metric may differ because the workloads differ --
+        # but only when they do. With matched lengths a miss is a real one.
+        lengths_differ = not payload.get("matched_lengths", False)
         for m in metrics:
-            flag = "yes" if m["agrees"] else ("no*" if m.get("length_sensitive") else "**NO**")
+            if m["agrees"]:
+                flag = "yes"
+            elif m.get("length_sensitive") and lengths_differ:
+                flag = "no*"
+            else:
+                flag = "**NO**"
             rows.append(
                 f"| {m['metric']} | {m['ours']:.2f} {m['unit']} | {m['upstream']:.2f} {m['unit']} "
                 f"| {m['delta_pct']:+.1f} % | {flag} |"
@@ -475,6 +732,14 @@ def crossvalidation_table(path: Path) -> str:
             *table(m),
             "",
         ]
+        missed = [x["metric"] for x in m["metrics"] if not x["agrees"]]
+        if missed:
+            out += [
+                f"Outside ±5 % with matched lengths: {', '.join(missed)}. Output throughput "
+                f"divides tokens by a measurement window, and the two harnesses define that "
+                f"window independently (this one: first measured dispatch to last completion).",
+                "",
+            ]
     if path.exists():
         u = json.loads(path.read_text())
         ratio = u.get("output_tokens_per_request", {})
@@ -485,11 +750,12 @@ def crossvalidation_table(path: Path) -> str:
             "",
             *table(u),
             "",
-            r"\* length-sensitive: a workload difference alone moves this metric. The "
-            "throughput ratio predicted from output length and window alone is 1.494 against "
-            "a measured 1.500, and each harness's E2E matches its own TTFT + TPOT x (out - 1) "
-            "to within 0.05 %. The disagreement is the workload, not the code — which is why "
-            "the matched run above exists.",
+            r"\* length-sensitive: with different output lengths these metrics differ by "
+            f"construction. Each harness is internally consistent: its mean E2E equals its "
+            f"mean TTFT + mean TPOT x (mean output - 1) to within "
+            f"{_e2e_identity_error_pct(u, 'ours'):.2f} % here and "
+            f"{_e2e_identity_error_pct(u, 'upstream'):.2f} % upstream. The disagreement is the "
+            "workload, not the code — which is why the matched run above exists.",
         ]
     return "\n".join(out).rstrip()
 
@@ -577,7 +843,7 @@ def bandwidth_table(runs: Sequence[RunResult], quality: Sequence[QualityResult])
     if base is None or "vllm-bf16" not in weights:
         return "_Finding 1 needs vllm-bf16 at 1 rps with a quality record._"
     lines = [
-        "| Config | Weights | Predicted speedup (byte ratio) | Measured TPOT p95 "
+        "| Config | Declared weights | Predicted speedup (byte ratio) | Measured TPOT p95 "
         "| Measured speedup |",
         "|---|---|---|---|---|",
     ]
@@ -625,6 +891,84 @@ def regime_table(runs: Sequence[RunResult]) -> str:
             f"| `{tt[0]}` ({tt[1].ttft_p95_s * 1e3:.0f} ms) | {len(at)} of {len(vllm)} |"
         )
     return "\n".join(lines)
+
+
+_INT4 = ("vllm-gptq-int4", "vllm-awq-int4")
+
+
+def _contiguous_through(rates: Sequence[float], won: set[float]) -> float | None:
+    """Highest rate r such that every rate up to r is in ``won``."""
+    last = None
+    for rate in rates:
+        if rate not in won:
+            break
+        last = rate
+    return last
+
+
+def findings_summary(runs: Sequence[RunResult], quality: Sequence[QualityResult]) -> str:
+    """README's two findings, with every number taken from the data.
+
+    These paragraphs used to be typed, and three of their numbers went stale
+    when later runs moved the averages while the tables beside them regenerated.
+    """
+    pts = operating_points(runs, 1.0)
+    weights = {x.config_id: x.model.weights_gib for x in quality}
+
+    def at(cfg: str, rate: float) -> ConfigOperatingPoint | None:
+        return next((p for p in pts.get(cfg, []) if p.rate_rps == rate), None)
+
+    base, int8 = at("vllm-bf16", 1.0), at("vllm-int8-w8a8", 1.0)
+    gptq, awq = at("vllm-gptq-int4", 1.0), at("vllm-awq-int4", 1.0)
+    needed = {"vllm-bf16", "vllm-int8-w8a8", *_INT4}
+    if base is None or int8 is None or gptq is None or awq is None or not needed <= weights.keys():
+        return "_The findings need all four vLLM configurations at 1 rps with quality records._"
+
+    def byte_ratio(cfg: str) -> float:
+        return weights["vllm-bf16"] / weights[cfg]
+
+    def speedup(p: ConfigOperatingPoint) -> float:
+        return base.tpot_p95_s / p.tpot_p95_s
+
+    int8_off = abs(speedup(int8) / byte_ratio("vllm-int8-w8a8") - 1.0) * 100.0
+    int4_pred = sorted({f"{byte_ratio(c):.2f}x" for c in _INT4})
+    finding1 = (
+        f"**1. Decode time tracks weight bytes, not FLOPs — quantitatively.** At 1 rps, "
+        f"INT8-W8A8 shrinks the declared weights {byte_ratio('vllm-int8-w8a8'):.2f}x and p95 "
+        f"decode latency by **{speedup(int8):.2f}x**, within {int8_off:.1f} % of the bandwidth "
+        f"prediction. The INT4 configurations *exceed* their predicted {' and '.join(int4_pred)} "
+        f"({speedup(gptq):.2f}x GPTQ, {speedup(awq):.2f}x AWQ), which a bytes-read model cannot "
+        f"explain; the likely cause is that Marlin is tuned for low batch while vLLM's general "
+        f"BF16 path is not. That is reported as unexplained rather than claimed as confirmation."
+    )
+
+    vllm = [c for c in pts if c.startswith("vllm-")]
+    rates = sorted({p.rate_rps for c in vllm for p in pts[c]})
+    winner: dict[float, str] = {}
+    for rate in rates:
+        here = [(c, p) for c in vllm for p in pts[c] if p.rate_rps == rate]
+        if here:
+            winner[rate] = min(here, key=lambda cp: cp[1].tpot_p95_s)[0]
+    int4_through = _contiguous_through(rates, {r for r, c in winner.items() if c in _INT4})
+    int8_from = min((r for r, c in winner.items() if c == "vllm-int8-w8a8"), default=None)
+    shared = [r for r in rates if all(at(c, r) for c in ("vllm-int8-w8a8", *_INT4))]
+    if int4_through is None or int8_from is None or not shared:
+        return finding1
+    top = shared[-1]
+
+    def ttft_ms(cfg: str) -> float:
+        point = at(cfg, top)
+        return point.ttft_p95_s * 1e3 if point else float("nan")
+
+    finding2 = (
+        f"**2. The best quantization inverts between load regimes.** INT4 has the lowest p95 "
+        f"decode latency at every rate up to {int4_through:g} rps; from {int8_from:g} rps INT8 "
+        f"does. At {top:g} rps, the highest rate all three quantized formats are still valid, "
+        f"p95 TTFT is **{ttft_ms('vllm-awq-int4'):.0f} ms (AWQ) and "
+        f"{ttft_ms('vllm-gptq-int4'):.0f} ms (GPTQ) against {ttft_ms('vllm-int8-w8a8'):.0f} ms "
+        f"for INT8**."
+    )
+    return f"{finding1}\n\n{finding2}"
 
 
 def _tok(p: ConfigOperatingPoint | None) -> str:

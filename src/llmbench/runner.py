@@ -21,11 +21,14 @@ given.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import gzip
 import json
 import os
 import platform
 import re
 import socket
+import statistics
 import subprocess
 import sys
 import time
@@ -34,10 +37,23 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from llmbench.config import EngineProfile, MethodologyRun, SweepConfig, load_engine_profile
-from llmbench.engines.base import EngineHandle, EngineLaunchSpec, EngineProcess, resolve_digest
-from llmbench.engines.preflight import PreflightReport, check_model_cached, run_preflight
+from llmbench.engines.base import (
+    EngineHandle,
+    EngineLaunchSpec,
+    EngineProcess,
+    publish_addresses,
+    resolve_digest,
+)
+from llmbench.engines.preflight import (
+    PreflightReport,
+    check_model_cached,
+    clock_lock_held_fraction,
+    run_preflight,
+    verify_clock_lock_from_telemetry,
+)
 from llmbench.engines.sglang import SglangEngine
 from llmbench.engines.vllm import VllmEngine
 from llmbench.loadgen.client import LoadGenConfig, LoadGenResult, RequestRecord, run_open_loop
@@ -59,7 +75,7 @@ from llmbench.schema import (
     RunResult,
     WorkloadConfig,
 )
-from llmbench.telemetry.gpu import GpuSampler, nvidia_smi_query
+from llmbench.telemetry.gpu import GpuSample, GpuSampler, nvidia_smi_query
 from llmbench.workload.arrivals import (
     ArrivalSchedule,
     num_requests_for_duration,
@@ -74,6 +90,9 @@ from llmbench.workload.lengths import (
 )
 from llmbench.workload.prompts import RequestSpec, build_requests
 from llmbench.workload.tokenizer import DEFAULT_HF_CACHE, load_tokenizer
+
+if TYPE_CHECKING:
+    from llmbench.workload.trace import TraceWindow
 
 __all__ = ["SweepRunner", "environment_info"]
 
@@ -106,6 +125,10 @@ class RatePoint:
     concurrency: int | None = None
     #: Distinguishes a methodology run's output file from a headline run's.
     label: str | None = None
+    #: Overrides the matrix's warm-up for this point; ``None`` uses the matrix.
+    warmup_requests: int | None = None
+    #: Context recorded into the result's notes, e.g. which trace window ran.
+    note: str | None = None
 
     @property
     def mean_interarrival_s(self) -> float:
@@ -137,13 +160,28 @@ def _total_ram_gib() -> float:
     return 0.0
 
 
+def _cpu_model() -> str:
+    """The CPU's marketing name.
+
+    ``platform.processor()`` returns only the architecture (``x86_64``) on
+    Linux, which is what every record before this fix says.
+    """
+    try:
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            if line.startswith("model name"):
+                return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return platform.processor() or "unknown"
+
+
 def environment_info(gpu_index: int, preflight: PreflightReport) -> HardwareInfo:
     """Capture the environment exactly as it was for this run."""
-    fields = "name,compute_cap,memory.total,driver_version,ecc.mode.current"
+    fields = "name,compute_cap,memory.total,driver_version,ecc.mode.current,persistence_mode"
     row = nvidia_smi_query(
         [f"--query-gpu={fields}", "--format=csv,noheader,nounits", "-i", str(gpu_index)]
     ).splitlines()[0]
-    name, compute_cap, vram, driver, ecc = (p.strip() for p in row.split(","))
+    name, compute_cap, vram, driver, ecc, persistence = (p.strip() for p in row.split(","))
 
     return HardwareInfo(
         gpu=GPUInfo(
@@ -157,7 +195,7 @@ def environment_info(gpu_index: int, preflight: PreflightReport) -> HardwareInfo
         ),
         host=HostInfo(
             hostname=socket.gethostname(),
-            cpu_model=platform.processor() or "unknown",
+            cpu_model=_cpu_model(),
             # Affinity, not total core count: the benchmark's real CPU budget.
             cpu_count=len(os.sched_getaffinity(0)),
             ram_total_gib=_total_ram_gib(),
@@ -167,10 +205,94 @@ def environment_info(gpu_index: int, preflight: PreflightReport) -> HardwareInfo
         clocks=ClockPolicy(
             locked=preflight.clocks_locked,
             sm_clock_mhz=preflight.sm_clock_mhz,
-            persistence_mode=True,
+            # Queried, not assumed. The memory clock is never locked (the lock
+            # script pins only the SM clock), so mem_clock_mhz stays unset.
+            persistence_mode=persistence.lower().startswith("enabled"),
         ),
         neighbor_gpu_busy=preflight.neighbor_gpu_busy,
     )
+
+
+def _trace_window_note(window: TraceWindow) -> str:
+    """Which stretch of the trace a replay used, for the result's notes.
+
+    Recorded because windows used to be indistinguishable in the results, which
+    is how five replays of one window passed for five independent windows.
+    """
+    recorded_s = window.duration_s / window.time_scale
+    return (
+        f"trace window {window.start_s:.1f}-{window.start_s + recorded_s:.1f} s of the trace: "
+        f"{len(window)} arrivals recorded at {len(window) / recorded_s:.2f} rps, time-scaled "
+        f"x{window.time_scale:.3f} to {window.mean_rate_rps:.2f} rps; CV^2 {window.burstiness:.3f} "
+        f"(Poisson = 1.00, unchanged by scaling)"
+    )
+
+
+def _clock_check_note(samples: Sequence[GpuSample], preflight: PreflightReport) -> str | None:
+    """Re-check a recorded clock lock against the clocks sampled during the run.
+
+    Preflight cannot do this: an idle A40 drops to ~210 MHz even when locked.
+    Only samples taken under load count, and dips below the lock are attributed
+    to the power cap when the driver reported one at the same moment.
+    """
+    locked_mhz = preflight.sm_clock_mhz
+    if not preflight.clocks_locked or locked_mhz is None:
+        return None
+    loaded = [s for s in samples if s.utilization_pct >= _LOADED_UTIL_PCT]
+    if not loaded:
+        return f"clock lock of {locked_mhz} MHz not re-checked: no sample was taken under load"
+    clocks = [s.sm_clock_mhz for s in loaded]
+    held = verify_clock_lock_from_telemetry(clocks, locked_mhz)
+    below = [s for s in loaded if locked_mhz - s.sm_clock_mhz > _CLOCK_TOLERANCE_MHZ]
+    capped = sum(1 for s in below if "sw_power_cap" in s.event_reasons)
+    if held:
+        verdict = "lock held"
+    elif capped == len(below):
+        verdict = "below the 70 % threshold, but only while the driver was power-capping"
+    else:
+        verdict = (
+            f"below the 70 % threshold with {len(below) - capped} low-clock sample(s) not "
+            f"explained by the power cap: the lock may have lapsed"
+        )
+    fraction = clock_lock_held_fraction(clocks, locked_mhz)
+    median = statistics.median(clocks)
+    return (
+        f"clock lock re-checked from {len(loaded)} loaded samples: {fraction:.0%} within "
+        f"{_CLOCK_TOLERANCE_MHZ} MHz of {locked_mhz} MHz, median {median:.0f} MHz -- {verdict}"
+    )
+
+
+def _queue_growth_note(ok: Sequence[RequestRecord]) -> str | None:
+    """Flag a run whose queue was still growing when it ended.
+
+    A run can be valid -- the measurement trustworthy -- and still not be a
+    steady state: past capacity, every arrival waits behind more work than the
+    last, and TTFT climbs for the whole window. Comparing the first and last
+    thirds of the run exposes that trend; a stable queue has none. The note is
+    informational and does not change the validity verdict.
+    """
+    ttfts = [r.ttft_s for r in sorted(ok, key=lambda r: r.index) if r.ttft_s is not None]
+    if len(ttfts) < _MIN_REQUESTS_FOR_TREND:
+        return None
+    third = len(ttfts) // 3
+    first, last = statistics.median(ttfts[:third]), statistics.median(ttfts[-third:])
+    if last > 2 * first and last - first > _QUEUE_GROWTH_MIN_RISE_S:
+        return (
+            f"not a steady state: median TTFT rose from {first * 1e3:.0f} ms in the first third "
+            f"of the run to {last * 1e3:.0f} ms in the last third, so the queue grew throughout; "
+            f"this rate is beyond sustainable capacity even though the measurement is valid"
+        )
+    return None
+
+
+#: Utilisation above which a sampled clock reflects the lock rather than idle.
+_LOADED_UTIL_PCT = 20.0
+#: Same tolerance as the preflight and telemetry checks.
+_CLOCK_TOLERANCE_MHZ = 30
+#: Thirds of fewer than ~10 requests make the median trend noise.
+_MIN_REQUESTS_FOR_TREND = 30
+#: A doubling of median TTFT must also be large in absolute terms to count.
+_QUEUE_GROWTH_MIN_RISE_S = 0.5
 
 
 class SweepRunner:
@@ -197,6 +319,8 @@ class SweepRunner:
 
         self._corpus: ShareGptCorpus | None = None
         self._rate_points: dict[float, RatePoint] = {}
+        #: Per-request records of measurements not yet written, by run id.
+        self._raw_records: dict[str, tuple[RequestRecord, ...]] = {}
 
     # ------------------------------------------------------------------
     # Workload
@@ -289,7 +413,7 @@ class SweepRunner:
         )
 
     def arrival_realizations(
-        self, rate_rps: float, *, trace_path: Path, count: int
+        self, rate_rps: float, *, trace_path: Path, count: int, label_prefix: str = "arrival"
     ) -> tuple[list[RatePoint], list[RatePoint]]:
         """``count`` independent Poisson draws and ``count`` trace windows.
 
@@ -312,11 +436,29 @@ class SweepRunner:
         )
         defaults = self.config.defaults
         seed = self.config.workload.seed
-        total = (
+        poisson_total = (
             num_requests_for_duration(rate_rps, defaults.measurement_duration_s)
             + defaults.warmup_requests
         )
 
+        # Every window is time-scaled to exactly the Poisson side's mean rate,
+        # so the two processes offer the same load and differ only in timing.
+        windows = [
+            w.scaled_to_rate(rate_rps)
+            for w in select_windows(
+                load_azure_trace(trace_path),
+                duration_s=defaults.measurement_duration_s,
+                count=count,
+                target_rate_rps=rate_rps,
+            )
+        ]
+
+        # A window can hold more arrivals than the Poisson side sends, so the
+        # prompt list is sized for the longest. Sampling and prompt building
+        # consume the seeded generator sequentially, so the first
+        # ``poisson_total`` prompts are exactly the ones rate_point() builds:
+        # lengthening the list changes nothing the Poisson side sends.
+        total = max(poisson_total, *(len(w) for w in windows))
         sampler = EmpiricalLengthSampler(pairs=corpus.pairs)
         pairs = clamp_to_context(sampler.sample(total, seed=seed), self.config.model.max_model_len)
         specs = build_requests(pairs, corpus.corpus_token_ids, tokenizer, seed=seed)
@@ -326,35 +468,28 @@ class SweepRunner:
                 rate_rps=rate_rps,
                 # A different seed per realization is the whole point: same
                 # process, independent draw.
-                schedule=poisson_schedule(rate_rps=rate_rps, num_requests=total, seed=seed + k),
-                specs=specs,
-                label=f"arrival-poisson-r{k}",
+                schedule=poisson_schedule(
+                    rate_rps=rate_rps, num_requests=poisson_total, seed=seed + k
+                ),
+                specs=specs[:poisson_total],
+                label=f"{label_prefix}-poisson-r{k}",
             )
             for k in range(count)
         ]
-
-        windows = select_windows(
-            load_azure_trace(trace_path),
-            duration_s=defaults.measurement_duration_s,
-            count=count,
-            target_rate_rps=rate_rps,
-        )
         trace = [
             RatePoint(
                 rate_rps=None,
                 schedule=trace_schedule(w.timestamps_s),
                 specs=specs[: len(w)],
                 arrival_process=ArrivalProcess.TRACE_REPLAY,
-                length_source=LengthSource.AZURE_TRACE,
-                label=f"arrival-trace-r{k}",
+                length_source=LengthSource.SHAREGPT,
+                label=f"{label_prefix}-trace-r{k}",
+                note=_trace_window_note(w),
             )
             for k, w in enumerate(windows)
         ]
         for k, w in enumerate(windows):
-            print(
-                f"  [trace window {k}] {len(w)} arrivals, {w.mean_rate_rps:.2f} rps, "
-                f"CV^2 {w.burstiness:.2f}"
-            )
+            print(f"  [trace window {k}] {_trace_window_note(w)}")
         return poisson, trace
 
     def trace_point(self, *, target_rate_rps: float, trace_path: Path) -> RatePoint:
@@ -383,7 +518,7 @@ class SweepRunner:
             load_azure_trace(trace_path),
             duration_s=defaults.measurement_duration_s,
             target_rate_rps=target_rate_rps,
-        )
+        ).scaled_to_rate(target_rate_rps)
         schedule = trace_schedule(window.timestamps_s)
 
         sampler = EmpiricalLengthSampler(pairs=corpus.pairs)
@@ -402,7 +537,10 @@ class SweepRunner:
             schedule=schedule,
             specs=specs,
             arrival_process=ArrivalProcess.TRACE_REPLAY,
-            length_source=LengthSource.AZURE_TRACE,
+            # The trace supplies arrival times only; lengths come from ShareGPT
+            # (see above), and the record says so.
+            length_source=LengthSource.SHAREGPT,
+            note=_trace_window_note(window),
         )
 
     def closed_loop_point(self, *, concurrency: int, matched_rate_rps: float) -> RatePoint:
@@ -421,6 +559,13 @@ class SweepRunner:
             specs=reference.specs,
             arrival_process=ArrivalProcess.CLOSED_LOOP,
             concurrency=concurrency,
+            # All N workers fire at t=0, so the first N requests arrive as one
+            # simultaneous burst that no steady-state closed loop ever produces.
+            # With the matrix's 50-request warm-up, every request past the 50th
+            # in that burst was measured: 14 of them at N=64, 110 at N=160, and
+            # the percentile that blew up tracked exactly that share of the
+            # sample. Warming up through the whole burst keeps it out.
+            warmup_requests=max(self.config.defaults.warmup_requests, concurrency),
         )
 
     # ------------------------------------------------------------------
@@ -448,6 +593,8 @@ class SweepRunner:
             startup_timeout_s=profile.startup_timeout_s,
             health_path=profile.health_path,
             metrics_path=profile.metrics_path,
+            extra_args=dict(profile.args),
+            publish_addresses=publish_addresses(),
         )
 
     # ------------------------------------------------------------------
@@ -472,6 +619,9 @@ class SweepRunner:
             temperature=0.0,
         )
 
+        warmup = (
+            point.warmup_requests if point.warmup_requests is not None else defaults.warmup_requests
+        )
         sampler = GpuSampler(gpu_index=self.gpu_index, interval_s=1.0)
         sampler.start()
         if point.arrival_process is ArrivalProcess.CLOSED_LOOP:
@@ -484,7 +634,7 @@ class SweepRunner:
                     point.specs,
                     loadgen_config,
                     concurrency=point.concurrency or 1,
-                    warmup_requests=defaults.warmup_requests,
+                    warmup_requests=warmup,
                 )
             )
         else:
@@ -493,17 +643,18 @@ class SweepRunner:
                     point.schedule,
                     point.specs,
                     loadgen_config,
-                    warmup_requests=defaults.warmup_requests,
+                    warmup_requests=warmup,
                 )
             )
         telemetry = sampler.stop()
+        clock_note = _clock_check_note(sampler.samples, preflight)
         finished = datetime.now(UTC)
 
         # Settle between rate points so queued work from this run cannot leak
         # into the next one's measurement window.
         time.sleep(defaults.settle_s)
 
-        return self._assemble(
+        run = self._assemble(
             handle=handle,
             point=point,
             repeat_index=repeat_index,
@@ -512,7 +663,12 @@ class SweepRunner:
             telemetry=telemetry,
             started=started,
             finished=finished,
+            extra_notes=[n for n in (point.note, clock_note) if n],
         )
+        # Kept until the summary is written, so the per-request records land
+        # next to it under the same name (see _write).
+        self._raw_records[run.run_id] = result.records
+        return run
 
     def _assemble(
         self,
@@ -525,6 +681,7 @@ class SweepRunner:
         telemetry: GPUTelemetry,
         started: datetime,
         finished: datetime,
+        extra_notes: Sequence[str] = (),
     ) -> RunResult:
         spec = handle.spec
         quant = self.config.quantization_for(spec.config_id)
@@ -550,6 +707,10 @@ class SweepRunner:
 
         notes = list(assessment.notes)
         notes.extend(preflight.warnings)
+        notes.extend(extra_notes)
+        growth = _queue_growth_note(ok)
+        if growth:
+            notes.append(growth)
 
         return RunResult(
             run_id=uuid.uuid4().hex,
@@ -568,6 +729,7 @@ class SweepRunner:
                 gpu_memory_utilization=spec.gpu_memory_utilization,
                 max_num_seqs=spec.max_num_seqs,
                 selected_kernel=handle.selected_kernel,
+                extra_args=dict(spec.extra_args),
             ),
             model=ModelConfig(
                 hf_id=quant.hf_id,
@@ -584,7 +746,7 @@ class SweepRunner:
                 length_source=point.length_source or self.config.workload.length_source,
                 seed=self.config.workload.seed,
                 num_requests=len(measured),
-                warmup_requests=defaults.warmup_requests,
+                warmup_requests=loadgen.warmup_discarded,
                 measurement_duration_s=loadgen.measurement_window_s,
                 ignore_eos=defaults.ignore_eos,
                 input_len_tokens=summarize([float(r.input_tokens) for r in measured]),
@@ -814,4 +976,16 @@ class SweepRunner:
         name = f"{stem}{suffix}__rep{run.repeat_index}.json"
         path = self.results_dir / name
         path.write_text(json.dumps(json.loads(run.model_dump_json()), indent=2) + "\n")
+
+        # The per-request records behind the summary. Gitignored (a sweep's
+        # worth is hundreds of MB), but without them no percentile can be
+        # recomputed and no single request can be inspected after the fact.
+        records = self._raw_records.pop(run.run_id, None)
+        if records is not None:
+            raw_dir = self.results_dir.parent / "raw"
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            raw_path = raw_dir / name.replace(".json", ".jsonl.gz")
+            with gzip.open(raw_path, "wt", encoding="utf-8") as fh:
+                for record in records:
+                    fh.write(json.dumps(dataclasses.asdict(record)) + "\n")
         return path

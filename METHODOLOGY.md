@@ -52,8 +52,20 @@ claim, and the closed-loop exhibit (`vllm-bf16-closed-loop`) was built to measur
 the error.
 
 It measured the opposite sign. At throughput-matched points the closed loop never understates
-the open-loop p99: below the knee the two are indistinguishable, and at 5–7 rps the closed loop
-reports a tail **3.3–3.7× worse** (REPORT.md §6). A continuous-batching engine below saturation
+the open-loop p99: at 4 rps the two are indistinguishable, at 1 rps the closed loop is 1.6×
+worse, and at 5–7 rps it reports a tail **3.3–3.7× worse** (REPORT.md §6).
+
+**The size of the near-knee gap is partly an artefact of the harness.** The closed loop starts
+all N workers at the same instant, so its first N requests arrive as one burst that a
+steady-state closed loop never produces. The warm-up was the matrix's 50 requests; for N = 64 to
+160 the last N − 50 requests of that burst — up to 110 — were measured, and the percentile that
+jumps in the data tracks exactly that share of the sample (p99 at N = 64, where it is 1.9 %; p95
+too from N = 128, where it is 6.2 %). Per-request records were not kept, so this is an inference
+the committed data cannot confirm. From v0.2.3 a closed-loop run warms up for at least N
+requests and keeps its per-request records; the near-knee rows are to be re-measured with it.
+
+The 1 rps row (N = 8) has no burst in its sample and is still worse, so some effect is real. The
+proposed mechanism: a continuous-batching engine below saturation
 has no stalls for coordinated omission to hide. What a closed loop does instead is hold
 occupancy at a constant maximum, so every new request's prefill competes with a full batch of
 decodes; Poisson arrivals at the same mean let occupancy fluctuate, and requests that land in
@@ -80,8 +92,10 @@ which removes generator-side variance from all cross-configuration comparisons.
 **Client saturation is detected, not assumed away.** At high λ the *client* can become the
 bottleneck, at which point the run silently measures the load generator instead of the server.
 Every request records `dispatch_lag` = actual − scheduled dispatch time. If p99 dispatch lag
-exceeds threshold the run is marked `CLIENT_SATURATED` and excluded from headline results. The
-record is kept, because the rate at which a harness runs out of headroom is itself a finding.
+exceeds its threshold *and* is material relative to the latency being measured, the run is
+marked `CLIENT_SATURATED` and excluded from headline results; an oversubscribed server takes
+precedence (see [Saturation is not client failure](#saturation-is-not-client-failure) for why).
+The record is kept, because the rate at which a harness runs out of headroom is itself a finding.
 
 Measured dispatch lag, BF16, p99 across three repeats:
 
@@ -106,16 +120,28 @@ and length distribution changes batching behaviour completely.
   human/assistant turns, and the same source vLLM's own `benchmark_serving.py` uses, so numbers
   remain comparable to published work.
 - **Secondary:** an **Azure LLM Inference Trace** replay, supplying real production *arrival
-  timestamps* rather than assumed Poisson. Measured as five independent non-overlapping
-  windows against five independent Poisson seeds, interleaved: p99 TTFT **+4 ms against a
-  ±21 ms interval** — indistinguishable. The trace was characterised first, and the replay
-  agreed with the characterisation.
+  timestamps* rather than assumed Poisson. Designed as five independent non-overlapping windows
+  against five independent Poisson seeds, interleaved. **In the committed data all five trace
+  replays were the same window:** `select_windows` searched the remaining trace for the best
+  match but advanced its cursor from the start of that remainder rather than past the window it
+  had taken, so it found the same best-matching window on every pass. The five trace runs'
+  identical measurement windows (193.42–193.45 s, against 195–213 s for the five Poisson draws)
+  show it in the data. Fixed in v0.2.3, with a test that the windows are disjoint; the re-run is
+  pending. What the committed data does show: that one window's p99 TTFT is indistinguishable
+  from the Poisson draws'.
 
-  **The published Azure conversation trace is very close to Poisson at this timescale.** In a
-  180 s window matched to 4 req/s, its inter-arrival times have a squared coefficient of
-  variation of **1.02** against a Poisson process's 1.00. The expectation going in was that
-  real traffic would be markedly burstier; measured, at the rate and window this benchmark
-  operates on, it is not.
+  **The window that was replayed is very close to Poisson at this timescale.** In a 180 s window
+  matched to 4 req/s, its inter-arrival times have a squared coefficient of variation of
+  **1.02** against a Poisson process's 1.00. The expectation going in was that real traffic
+  would be markedly burstier; measured, for this window at this rate, it is not. Other windows
+  are not all like it: the five best non-overlapping windows near 4 req/s have CV² between
+  0.99 and 1.61.
+
+  **Rate matching.** Windows of a real trace rarely sit exactly at the target rate — those five
+  run at 4.00–4.44 req/s. From v0.2.3 each window is time-scaled to exactly the target mean rate
+  before replay (arrival times multiplied by rate / target, a factor of 1.00–1.11 here). CV² is
+  dimensionless, so scaling leaves burstiness unchanged while removing up to 11 % of extra load
+  that would otherwise be confounded with it. The factor is recorded in each run's notes.
 
   That measurement is what the metric is for, and getting it required fixing the metric first.
   An earlier version divided inter-arrival variance by the mean, which is not dimensionless —
@@ -190,8 +216,18 @@ reports "locked" for an unlocked card.
 The lock is therefore recorded by the script that applies it and cross-checked behaviourally.
 That check is only meaningful under load: measured directly, an idle A40 with a 1740 MHz lock
 applied still drops to 210 MHz, and only holds 1740 MHz once a CUDA context exists. A preflight
-probe on an idle card therefore returns "unknown", never "failed"; the real verification runs
-against clocks sampled during the measurement window.
+probe on an idle card therefore returns "unknown", never "failed"; the real verification has to
+run against clocks sampled during the measurement window.
+
+**Until v0.2.3 that verification was written but never run.** The preflight warning promised it,
+and the function existed with tests, but nothing called it, so every committed record carries
+the lock as a claim only. Checked after the fact against the recorded clock distributions, 88
+of the 187 valid runs have a median SM clock below 1710 MHz — under load the card trades clock
+for watts at its 300 W cap, as the section above describes, so this is physics rather than a
+lapsed lock, but it is a real difference in clock between light and heavy load. From v0.2.3
+every run is re-checked against the clocks sampled while the GPU was loaded, and the result is
+written into its notes: the share of samples at the lock, the median clock, and whether the
+dips below it coincided with the driver reporting the power cap.
 
 ---
 
@@ -203,17 +239,19 @@ inlet air temperature on the measurement device. Mitigations: measurement is pin
 GPU; clocks are locked; throttle telemetry is captured per run; and every record carries a
 `neighbor_gpu_busy` flag so no result can quietly lose its asterisk.
 
-66 of the 168 runs were measured beside a busy neighbour, including **both SGLang
+133 of the 244 runs were measured beside a busy neighbour, including **both SGLang
 configurations in their entirety** — which puts the confound directly on the engine axis, where
-it matters most. The stamp made it possible to check rather than argue about:
+it matters most. The stamp made it possible to check rather than argue about. Across the valid
+runs:
 
 | | runs | temp mean | temp max | SM clock | power | throttled samples |
 |---|---|---|---|---|---|---|
-| busy neighbour | 60 | 68.8 °C | 72 °C | 1669 MHz | 287.9 W | 0 |
-| quiet chassis | 63 | 69.9 °C | 72 °C | 1662 MHz | 289.7 W | 0 |
+| busy neighbour | 115 | 68.6 °C | 72 °C | 1666 MHz | 290.5 W | 0 |
+| quiet chassis | 72 | 69.9 °C | 72 °C | 1667 MHz | 290.2 W | 0 |
 
-Runs beside a busy neighbour were **1.1 °C cooler at 7 MHz higher clocks** — the opposite
-direction to the feared effect, and small. No record throttled; the only reason ever observed
+Runs beside a busy neighbour were **1.3 °C cooler at the same clock** — the opposite direction
+to the feared effect, and small. (At 168 runs the same comparison read 1.1 °C cooler and 7 MHz
+faster; the direction has held as the data grew.) No record throttled; the only reason ever observed
 anywhere in the sweep is `sw_power_cap`, which is the card's own 300 W budget rather than
 thermal coupling. `vllm-bf16` crosses the quiet-to-busy boundary between 4 and 5 rps with no
 discontinuity in TTFT, TPOT or throughput.
@@ -434,6 +472,26 @@ Every (configuration, request-rate) point is run **≥3 times**. Mean and standa
 reported, and every chart carries error bars. A benchmark without error bars invites the reader
 to assume the author got lucky once.
 
+The spread across repeats is the **sample** standard deviation (divisor n − 1). Until v0.2.3 it
+was the population formula, which is right for the requests inside one run — they are the
+complete run, not a draw from it — but not for three repeats, which are a draw from the runs
+that could have been made; with three it understates the spread by about 18 %. Every error bar,
+pooled standard error and drift threshold now uses the sample form. No verdict in the reports
+changed.
+
+**Per-request records.** From v0.2.3 every run also writes its individual requests — dispatch
+time, TTFT, inter-token gaps, token counts, errors — to `results/raw/<run>.jsonl.gz`
+(gitignored: a full sweep is hundreds of MB). Earlier runs kept only their summaries, which is
+why some questions about them (above all the closed-loop start-up burst) cannot be settled
+from the committed data.
+
+**Valid is not the same as steady.** A run is `oversubscribed` only when its achieved request
+rate falls below 80 % of the offered one, measured over a window that includes the drain after
+the last request. A run can pass that and still be past capacity, with its queue growing for
+the whole window: the highest valid rates of INT4 (8 rps) and INT8 (9 rps) are such runs, with
+p95 TTFT 10 to 25 times their median. From v0.2.3 the runner compares the median TTFT of the
+first and last thirds of each run and notes a queue that grew throughout.
+
 ---
 
 ## 9. Cross-validation
@@ -492,8 +550,8 @@ A40 is sm_86, and vLLM will silently dequantize an FP8 checkpoint to FP16 rather
 which is why FP8 is excluded here rather than measured badly.
 
 **A higher-bandwidth part of the same generation, to test the mechanism directly.** The bytes-read
-model predicted INT8 decode within 1.6 % on this card. If the model is right rather than merely
-fitted, the *same* prediction should hold on an A100 or H100 while the absolute advantage of
+model predicted INT8's decode speed-up to within about 1 % on this card. If the model is right
+rather than merely fitted, the *same* prediction should hold on an A100 or H100 while the absolute advantage of
 weight-only quantization narrows, because those parts are less bandwidth-starved relative to
 their compute. That is a falsifiable prediction this repository cannot test with one GPU model,
 and it is the single measurement that would most strengthen or break the central claim.

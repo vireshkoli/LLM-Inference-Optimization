@@ -205,7 +205,9 @@ def compare_to_upstream(
         return []
 
     def mean_ms(attr: str, percentile: str) -> float:
-        return summarize([getattr(getattr(r, attr), percentile) for r in ours]).mean * 1e3
+        return (
+            summarize([getattr(getattr(r, attr), percentile) for r in ours], sample=True).mean * 1e3
+        )
 
     pairs: list[tuple[str, float, float, str]] = [
         ("TTFT mean", mean_ms("ttft_s", "mean"), upstream.get("mean_ttft_ms", 0.0), "ms"),
@@ -215,7 +217,7 @@ def compare_to_upstream(
         ("E2E mean", mean_ms("e2e_latency_s", "mean"), upstream.get("mean_e2el_ms", 0.0), "ms"),
         (
             "Output throughput",
-            summarize([r.output_token_throughput for r in ours]).mean,
+            summarize([r.output_token_throughput for r in ours], sample=True).mean,
             upstream.get("output_throughput", 0.0),
             "tok/s",
         ),

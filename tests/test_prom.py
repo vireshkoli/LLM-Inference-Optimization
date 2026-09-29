@@ -112,3 +112,10 @@ class TestDelta:
     def test_missing_side_yields_none(self) -> None:
         d = EngineMetrics(generation_tokens_total=100.0).delta(EngineMetrics())
         assert d.generation_tokens_total is None
+
+
+def test_sglang_throughput_gauge_is_not_read_as_a_token_counter() -> None:
+    """Regression. ``sglang:gen_throughput`` is a rate; mapping it onto the
+    cumulative token counter made the difference of two snapshots meaningless."""
+    body = "# TYPE sglang:gen_throughput gauge\nsglang:gen_throughput 1834.5\n"
+    assert parse_prometheus_text(body).generation_tokens_total is None

@@ -40,8 +40,9 @@ __all__ = ["LoadGenConfig", "LoadGenResult", "RequestRecord", "fire_one", "run_o
 class RequestRecord:
     """Everything measured for a single request.
 
-    Written to ``results/raw/*.jsonl`` (gitignored — hundreds of MB per sweep)
-    and aggregated into the committed :class:`~llmbench.schema.RunResult`.
+    Aggregated into the committed :class:`~llmbench.schema.RunResult`, and
+    written as-is by the runner to ``results/raw/<run>.jsonl.gz`` (gitignored),
+    so percentiles can be recomputed and individual requests inspected later.
     """
 
     index: int
@@ -58,6 +59,11 @@ class RequestRecord:
     finish_reason: str | None
     status_code: int | None
     error: str | None
+    #: When the request actually left, in seconds from the start of the run.
+    #: The open loop could reconstruct it from schedule plus lag; the closed
+    #: loop has no schedule, so without this its start-up burst — every worker
+    #: firing at once — cannot be seen in the data at all.
+    dispatch_offset_s: float | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -131,6 +137,7 @@ async def fire_one(
     scheduled_offset_s: float,
     dispatch_lag_s: float,
     dispatch_time_s: float,
+    dispatch_offset_s: float | None = None,
 ) -> RequestRecord:
     """Issue one streamed request and time it.
 
@@ -180,6 +187,7 @@ async def fire_one(
         finish_reason=result.finish_reason,
         status_code=status,
         error=result.error,
+        dispatch_offset_s=dispatch_offset_s,
     )
 
 
@@ -253,6 +261,7 @@ async def run_open_loop(
                         scheduled_offset_s=offset,
                         dispatch_lag_s=actual - target,
                         dispatch_time_s=actual,
+                        dispatch_offset_s=actual - origin,
                     )
                 )
             )

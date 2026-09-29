@@ -85,6 +85,17 @@ class TestSummarize:
         values = [1.0, 2.0, 3.0, 4.0]
         assert summarize(values).std == pytest.approx(float(np.std(values)))
 
+    def test_repeats_use_sample_std(self) -> None:
+        """Values that are one number per run are a draw from the runs that
+        could have been made; with three of them the population formula
+        understates the spread by about 18 %."""
+        values = [100.0, 110.0, 120.0]
+        assert summarize(values, sample=True).std == pytest.approx(float(np.std(values, ddof=1)))
+        assert summarize(values, sample=True).std == pytest.approx(10.0)
+
+    def test_sample_std_of_one_value_is_zero(self) -> None:
+        assert summarize([5.0], sample=True).std == 0.0
+
     def test_empty_sample_yields_a_valid_zero_record(self) -> None:
         """A run that completed nothing still needs a storable result.
 

@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-import yaml
 from rich.console import Console
 from rich.table import Table
 
@@ -29,7 +28,7 @@ from llmbench.analysis.crossvalidate import (
     upstream_args,
 )
 from llmbench.analysis.plots import plot_latency_throughput, plot_pareto, plot_tpot_throughput
-from llmbench.config import load_engine_profile, load_sweep_config
+from llmbench.config import load_cost_config, load_engine_profile, load_sweep_config
 from llmbench.engines.preflight import run_preflight
 from llmbench.engines.sglang import SglangEngine
 from llmbench.engines.vllm import VllmEngine
@@ -39,9 +38,11 @@ from llmbench.report.render import (
     crossvalidation_table,
     drift_table,
     engine_axis_table,
+    findings_summary,
     headline_facts,
     latency_table,
     load_quality,
+    methodology_summary,
     methodology_table,
     pareto_markers,
     quality_table,
@@ -283,8 +284,31 @@ def dump_schema(
     console.print(f"wrote {out}")
 
 
-if __name__ == "__main__":  # pragma: no cover
-    app()
+#: The generated blocks each document carries.
+_DOCUMENT_BLOCKS: dict[str, tuple[str, ...]] = {
+    "README.md": (
+        "headline",
+        "findings",
+        "sla-table",
+        "cost-note",
+        "validity",
+        "methodology-summary",
+    ),
+    "REPORT.md": (
+        "headline",
+        "cost-note",
+        "bandwidth-table",
+        "regime-table",
+        "sla-table",
+        "latency-table",
+        "quality-table",
+        "validity",
+        "methodology-table",
+        "drift-table",
+        "crossvalidation-table",
+        "engine-axis-table",
+    ),
+}
 
 
 @app.command()
@@ -314,10 +338,10 @@ def report(
         raise typer.Exit(code=1)
 
     quality = load_quality(quality_dir) if quality_dir.exists() else []
-    cost = yaml.safe_load(cost_config.read_text())
-    ref = cost["reference"]
-    price = float(ref["gpu_hourly_usd"])
-    budgets = [float(x) for x in cost["sla_targets"]["p95_ttft_ms"]]
+    cost = load_cost_config(cost_config)
+    ref = cost.reference
+    price = ref.gpu_hourly_usd
+    budgets = cost.sla_targets.p95_ttft_ms
 
     figures = out / "results" / "figures"
     paths = [
@@ -353,20 +377,35 @@ def report(
         "latency-table": latency_table(runs, price),
         "validity": validity_summary(runs),
         "cost-note": cost_note(
-            price, ref["source_vendor"], ref["source_url"], ref["accessed_date"]
+            price,
+            ref.source_vendor,
+            ref.source_url,
+            ref.accessed_date,
+            [(a.label, a.gpu_hourly_usd) for a in cost.alternates],
+        ),
+        "findings": findings_summary(runs, quality),
+        "methodology-summary": methodology_summary(
+            runs,
+            quality,
+            crossvalidation_path=results.parent / "crossvalidation.json",
+            baseline_config_id="vllm-bf16",
+            rate_rps=sla_methodology_rate,
         ),
     }
     if quality:
         blocks["quality-table"] = quality_table(quality)
 
-    for doc in ("README.md", "REPORT.md"):
+    for doc, keys in _DOCUMENT_BLOCKS.items():
         path = out / doc
         if not path.exists():
             continue
-        present = {k: v for k, v in blocks.items() if f"BEGIN:{k}" in path.read_text()}
-        if present:
-            render_into(path, present)
-            console.print(f"  updated {doc}: {', '.join(sorted(present))}")
+        # Every block the document is meant to carry is passed, so a marker
+        # deleted by an edit raises MissingBlockError instead of the block
+        # being skipped and a stale copy surviving as if generated. (The
+        # quality table is the exception: it exists only once quality has run.)
+        wanted = {k: blocks[k] for k in keys if k in blocks}
+        render_into(path, wanted)
+        console.print(f"  updated {doc}: {', '.join(sorted(wanted))}")
 
     written = write_summary_json(runs, out / "docs" / "results.json", price)
     for path in [*paths, written]:
@@ -653,6 +692,9 @@ def arrival_study(
     trace: Annotated[Path, typer.Option(help="Azure trace CSV")] = Path("data/azure_trace.csv"),
     results: Annotated[Path, typer.Option(help="Where to write results")] = Path("results/runs"),
     require_locked_clocks: Annotated[bool, typer.Option(help="Refuse to run unlocked")] = False,
+    label: Annotated[
+        str, typer.Option(help="File-name prefix; a new one keeps an earlier study's files")
+    ] = "arrival",
 ) -> None:
     """Does the arrival *process* change tail latency, or just this draw of it?
 
@@ -676,7 +718,9 @@ def arrival_study(
     engine = _ENGINE_TYPES[entry.engine]()
     spec = runner._launch_spec(config_id, profile)
 
-    poisson, trace_points = runner.arrival_realizations(rate, trace_path=trace, count=realizations)
+    poisson, trace_points = runner.arrival_realizations(
+        rate, trace_path=trace, count=realizations, label_prefix=label
+    )
     preflight = run_preflight(
         gpu,
         results_path=str(results),
@@ -710,3 +754,10 @@ def arrival_study(
         console.print("  engine stopped")
 
     console.print(f"\n[green]wrote {len(written)} result file(s)[/green] to {results}")
+
+
+# At the end, after every command is registered: in the middle of the module,
+# `python -m llmbench.cli` ran before the later commands existed and offered six
+# of ten.
+if __name__ == "__main__":  # pragma: no cover
+    app()

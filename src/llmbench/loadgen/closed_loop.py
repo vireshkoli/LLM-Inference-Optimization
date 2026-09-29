@@ -98,6 +98,7 @@ async def run_closed_loop(
 
     records: list[RequestRecord] = []
     measurement_start: float | None = None
+    origin = time.perf_counter()
 
     async def worker() -> None:
         nonlocal measurement_start
@@ -123,6 +124,7 @@ async def run_closed_loop(
                     scheduled_offset_s=0.0,
                     dispatch_lag_s=0.0,
                     dispatch_time_s=dispatch,
+                    dispatch_offset_s=dispatch - origin,
                 )
             )
 

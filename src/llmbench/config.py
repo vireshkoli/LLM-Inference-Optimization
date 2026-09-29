@@ -6,9 +6,11 @@ strictly as the results are: a typo in a key that silently falls back to a
 default would produce a run that looks fine and measures something other than
 what was asked for.
 
-Everything here is therefore ``extra="forbid"``, and cross-references (a
-configuration naming a quantization level that does not exist) are checked at
-load time rather than at launch time, hours into a lab session.
+Everything here is therefore ``extra="forbid"`` -- except a methodology run and
+an engine profile, which carry free-form notes (``parity_notes`` and the like)
+and so accept unknown keys -- and cross-references (a configuration naming a
+quantization level that does not exist) are checked at load time rather than at
+launch time, hours into a lab session.
 """
 
 from __future__ import annotations
@@ -19,12 +21,14 @@ from typing import Annotated, Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from llmbench.schema import ArrivalProcess, EngineName, LengthSource
+from llmbench.schema import ArrivalProcess, CostAssumptions, EngineName, LengthSource
 
 __all__ = [
+    "CostConfig",
     "EngineProfile",
     "MethodologyRun",
     "SweepConfig",
+    "load_cost_config",
     "load_engine_profile",
     "load_sweep_config",
 ]
@@ -65,9 +69,26 @@ class WorkloadSpec(_Strict):
             msg = f"request rates must be positive, got {self.request_rates_rps}"
             raise ValueError(msg)
         if self.request_rates_rps != sorted(self.request_rates_rps):
-            # Ascending order matters: the runner ramps upward and stops at the
-            # first sustained saturation, which only works if rates increase.
+            # Ascending order means an interrupted sweep leaves the low-load end
+            # of every curve complete, and each point is measured on a server
+            # that has only seen lighter load. The runner measures every rate:
+            # it does not stop early at saturation.
             msg = f"request rates must be ascending, got {self.request_rates_rps}"
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _ladder_is_poisson(self) -> WorkloadSpec:
+        # A rate ladder is offered load at stated rates, which only Poisson
+        # arrivals provide. Trace replay and the closed loop are declared as
+        # methodology runs. This key used to be validated and then ignored, so
+        # setting it to anything else silently still ran Poisson.
+        if self.arrival_process is not ArrivalProcess.POISSON:
+            msg = (
+                f"workload.arrival_process must be 'poisson' for the rate ladder, got "
+                f"{self.arrival_process.value!r}; declare trace replay or closed loop "
+                f"under methodology_runs"
+            )
             raise ValueError(msg)
         return self
 
@@ -168,6 +189,32 @@ class EngineProfile(_Strict):
     metrics: dict[str, str] = Field(default_factory=dict)
 
 
+class PriceAlternate(_Strict):
+    label: str
+    gpu_hourly_usd: float = Field(gt=0)
+    source_url: str
+
+
+class SlaTargets(_Strict):
+    p95_ttft_ms: list[float] = Field(min_length=1)
+    #: Listed for reference; the SLA table ranks on p95 TTFT only.
+    p95_tpot_ms: list[float] = Field(default_factory=list)
+
+
+class CostConfig(_Strict):
+    """``configs/cost.yaml``: the one place a GPU price is stated.
+
+    Validated like every other configuration file. It used to be read with a
+    bare ``yaml.safe_load`` and indexed by key, so a misspelt key raised a
+    ``KeyError`` mid-report and an extra one was silently ignored.
+    """
+
+    schema_version: str
+    reference: CostAssumptions
+    alternates: list[PriceAlternate] = Field(default_factory=list)
+    sla_targets: SlaTargets
+
+
 def _read_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         msg = f"config not found: {path}"
@@ -187,3 +234,7 @@ def load_engine_profile(engine: EngineName, configs_dir: Path | str = "configs")
     return EngineProfile.model_validate(
         _read_yaml(Path(configs_dir) / "engines" / f"{engine.value}.yaml")
     )
+
+
+def load_cost_config(path: Path | str) -> CostConfig:
+    return CostConfig.model_validate(_read_yaml(Path(path)))

@@ -1,7 +1,7 @@
 # =============================================================================
 # Pipeline validation subset — the Phase 4 gate.
 #
-# Target: ~15 minutes end-to-end, one engine, one quantization, no repeats.
+# Takes about 6 minutes end-to-end: one engine, one quantization, no repeats.
 # Its job is to prove the harness works end to end (launch -> load -> measure ->
 # validate -> chart) BEFORE ~18 GPU-hours are committed to the full matrix.
 #

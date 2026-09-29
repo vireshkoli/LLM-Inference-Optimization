@@ -33,6 +33,7 @@ from pathlib import Path
 from llmbench.schema import QualityScore, QualityTask
 
 __all__ = [
+    "LM_EVAL_SEED",
     "TASK_BACKEND",
     "TASK_CHAT_TEMPLATE",
     "TASK_FEWSHOT",
@@ -40,6 +41,9 @@ __all__ = [
     "HarnessError",
     "run_lm_eval",
 ]
+
+#: Seed passed to lm-eval (few-shot sampling) and recorded in quality results.
+LM_EVAL_SEED = 0
 
 
 class HarnessError(RuntimeError):
@@ -153,7 +157,7 @@ def _build_command(config: HarnessConfig, tasks: Sequence[str], output_dir: Path
         str(output_dir),
         # Greedy, seeded, identical prompts across configurations.
         "--seed",
-        "0",
+        str(LM_EVAL_SEED),
     ]
     if config.apply_chat_template:
         command.append("--apply_chat_template")

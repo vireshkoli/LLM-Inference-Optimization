@@ -45,14 +45,11 @@ class VllmEngine(EngineProcess):
             str(spec.gpu_memory_utilization),
             "--max-num-seqs",
             str(spec.max_num_seqs),
-            # Per-request logging perturbs the measurement it is logging. The
-            # old `--disable-log-requests` was removed in v0.26; the flag is now
-            # inverted and defaults off, but stated explicitly so a future
-            # default change cannot silently start logging mid-project.
-            "--no-enable-log-requests",
-            "--seed",
-            "0",
         ]
+        # Flags shared by every vLLM configuration -- `--no-enable-log-requests`
+        # and `--seed 0` -- live in the `args` of configs/engines/vllm.yaml and
+        # arrive here as extra_args, so editing that file changes what runs and
+        # each result records exactly what was passed.
         for key, value in spec.extra_args.items():
             args.append(key)
             if value:

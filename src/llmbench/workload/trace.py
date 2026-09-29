@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import csv
 import statistics
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -74,6 +74,14 @@ class TraceWindow:
 
     requests: tuple[TraceRequest, ...]
     duration_s: float
+    #: Where the window begins in the trace file, in seconds from its first
+    #: request. Arrivals inside the window are rebased to zero, so without this
+    #: two windows cannot be told apart — which is how five "independent"
+    #: windows once turned out to be one window selected five times.
+    start_s: float = 0.0
+    #: Factor the arrival times were stretched by to hit a target mean rate
+    #: (see :meth:`scaled_to_rate`); 1.0 for a window replayed as recorded.
+    time_scale: float = 1.0
 
     def __len__(self) -> int:
         return len(self.requests)
@@ -111,6 +119,38 @@ class TraceWindow:
             return 0.0
         mean = statistics.fmean(gaps)
         return statistics.variance(gaps) / (mean**2) if mean > 0 else 0.0
+
+    def scaled_to_rate(self, target_rate_rps: float) -> TraceWindow:
+        """Stretch or compress time so the window's mean rate equals the target.
+
+        Windows of a real trace rarely sit exactly at the rate being compared
+        against: in the Azure conversation trace, the five best non-overlapping
+        180 s windows around 4 req/s run between 4.0 and 4.44 req/s. Replayed as
+        recorded, the faster ones would offer up to 11 % more load than the
+        Poisson runs they are compared with, and a worse tail could be load
+        rather than burstiness. Multiplying every arrival time by
+        ``mean_rate / target`` matches the load exactly while leaving the shape
+        of the arrival process alone: :attr:`burstiness` is dimensionless, so
+        uniform scaling does not change it. The factor is kept on the window
+        and should be reported next to any result measured with it.
+        """
+        if target_rate_rps <= 0:
+            msg = f"target rate must be positive, got {target_rate_rps}"
+            raise ValueError(msg)
+        factor = self.mean_rate_rps / target_rate_rps
+        return TraceWindow(
+            requests=tuple(
+                TraceRequest(
+                    arrival_s=r.arrival_s * factor,
+                    input_tokens=r.input_tokens,
+                    output_tokens=r.output_tokens,
+                )
+                for r in self.requests
+            ),
+            duration_s=self.duration_s * factor,
+            start_s=self.start_s,
+            time_scale=self.time_scale * factor,
+        )
 
     @property
     def timestamps_s(self) -> tuple[float, ...]:
@@ -194,6 +234,51 @@ def load_azure_trace(path: Path, *, max_rows: int | None = None) -> list[TraceRe
     ]
 
 
+def _full_windows(requests: Sequence[TraceRequest], duration_s: float) -> Iterator[tuple[int, int]]:
+    """Yield ``(start, end)`` index pairs for every window that fits the trace.
+
+    ``requests[start:end]`` is the contiguous run of arrivals in
+    ``[requests[start].arrival_s, requests[start].arrival_s + duration_s)``.
+
+    A window must fit entirely inside the trace. Without this bound, a start
+    index near the end yields a *truncated* window — a 20 s request of the last
+    3 s of data — whose request count is short and whose apparent rate is
+    therefore far below the trace's real one. Under a rate-matching search those
+    truncated windows look like excellent matches for any low target, and the
+    replay would quietly offer a fraction of the intended load.
+    """
+    last_start = requests[-1].arrival_s - duration_s
+    end = 0
+    for start in range(len(requests)):
+        if requests[start].arrival_s > last_start:
+            return
+        limit = requests[start].arrival_s + duration_s
+        end = max(end, start)
+        while end < len(requests) and requests[end].arrival_s < limit:
+            end += 1
+        if end - start >= 2:
+            yield start, end
+
+
+def _window(
+    requests: Sequence[TraceRequest], start: int, end: int, duration_s: float
+) -> TraceWindow:
+    """Materialise ``requests[start:end]`` as a window rebased to zero."""
+    origin = requests[start].arrival_s
+    return TraceWindow(
+        requests=tuple(
+            TraceRequest(
+                arrival_s=r.arrival_s - origin,
+                input_tokens=r.input_tokens,
+                output_tokens=r.output_tokens,
+            )
+            for r in requests[start:end]
+        ),
+        duration_s=duration_s,
+        start_s=origin,
+    )
+
+
 def select_window(
     requests: Sequence[TraceRequest],
     *,
@@ -229,27 +314,9 @@ def select_window(
         msg = f"trace spans {span:.0f}s, shorter than the requested {duration_s:.0f}s window"
         raise ValueError(msg)
 
-    # A window must fit entirely inside the trace. Without this bound, a start
-    # index near the end yields a *truncated* window — a 20 s request of the
-    # last 3 s of data — whose request count is short and whose apparent rate is
-    # therefore far below the trace's real rate. Under a rate-matching search
-    # those truncated windows look like excellent matches for any low target,
-    # and the replay would quietly offer a fraction of the intended load.
-    last_start = requests[-1].arrival_s - duration_s
-
     best: tuple[float, int, int] | None = None  # (score, start index, end index)
-    end = 0
-    for start in range(len(requests)):
-        if requests[start].arrival_s > last_start:
-            break
-        limit = requests[start].arrival_s + duration_s
-        end = max(end, start)
-        while end < len(requests) and requests[end].arrival_s < limit:
-            end += 1
-        count = end - start
-        if count < 2:
-            continue
-        rate = count / duration_s
+    for start, end in _full_windows(requests, duration_s):
+        rate = (end - start) / duration_s
         score = 0.0 if target_rate_rps is None else abs(rate - target_rate_rps)
         if best is None or score < best[0]:
             best = (score, start, end)
@@ -264,15 +331,7 @@ def select_window(
         raise ValueError(msg)
 
     _, start, end = best
-    window = tuple(
-        TraceRequest(
-            arrival_s=r.arrival_s - requests[start].arrival_s,
-            input_tokens=r.input_tokens,
-            output_tokens=r.output_tokens,
-        )
-        for r in requests[start:end]
-    )
-    result = TraceWindow(requests=window, duration_s=duration_s)
+    result = _window(requests, start, end, duration_s)
 
     if target_rate_rps is not None:
         drift = abs(result.mean_rate_rps - target_rate_rps) / target_rate_rps
@@ -304,9 +363,17 @@ def select_windows(
     of traffic therefore needs several independent windows, exactly as the
     Poisson side needs several seeds.
 
-    Windows are non-overlapping so they are genuinely independent draws; sliding
-    a window forward by a few seconds would produce near-identical arrival
-    sequences and a falsely tight spread.
+    Every full window in the trace is ranked by how close its mean rate is to
+    the target, and windows are accepted best-first as long as they overlap
+    none already taken. Windows are non-overlapping so they are genuinely
+    independent draws; sliding a window forward by a few seconds would produce
+    near-identical arrival sequences and a falsely tight spread. They are
+    returned in trace order.
+
+    An earlier version searched the remaining trace for the best match but then
+    advanced its cursor from the *start* of the remaining trace rather than past
+    the window it had just taken, so it found the same best-matching window on
+    every pass and returned one window ``count`` times.
 
     Raises:
         ValueError: If the trace cannot supply ``count`` windows within
@@ -316,31 +383,28 @@ def select_windows(
         msg = f"count must be at least 1, got {count}"
         raise ValueError(msg)
 
-    windows: list[TraceWindow] = []
-    cursor = 0.0
-    span = requests[-1].arrival_s if requests else 0.0
-
-    while len(windows) < count and cursor + duration_s <= span:
-        remaining = [r for r in requests if r.arrival_s >= cursor]
-        try:
-            window = select_window(
-                remaining,
-                duration_s=duration_s,
-                target_rate_rps=target_rate_rps,
-                tolerance=tolerance,
-            )
-        except ValueError:
+    ranked = sorted(
+        _full_windows(requests, duration_s) if requests else (),
+        key=lambda se: (abs((se[1] - se[0]) / duration_s - target_rate_rps), se[0]),
+    )
+    taken: list[tuple[int, int]] = []
+    for start, end in ranked:
+        if len(taken) == count:
             break
-        windows.append(window)
-        # Advance past the window just taken, plus its own span, so the next
-        # candidate cannot overlap it.
-        first_abs = next(r.arrival_s for r in requests if r.arrival_s >= cursor)
-        cursor = first_abs + duration_s
+        rate = (end - start) / duration_s
+        if abs(rate - target_rate_rps) / target_rate_rps > tolerance:
+            break  # ranked by closeness, so every remaining window is further off
+        # Equal-length windows overlap exactly when their starts are closer
+        # than one window length.
+        begin = requests[start].arrival_s
+        if any(abs(begin - requests[other].arrival_s) < duration_s for other, _ in taken):
+            continue
+        taken.append((start, end))
 
-    if len(windows) < count:
+    if len(taken) < count:
         msg = (
-            f"trace supplied only {len(windows)} non-overlapping window(s) of {duration_s:.0f}s "
+            f"trace supplied only {len(taken)} non-overlapping window(s) of {duration_s:.0f}s "
             f"within {tolerance:.0%} of {target_rate_rps:g} rps; {count} were requested"
         )
         raise ValueError(msg)
-    return windows
+    return [_window(requests, start, end, duration_s) for start, end in sorted(taken)]

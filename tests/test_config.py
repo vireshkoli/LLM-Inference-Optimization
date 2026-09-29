@@ -14,7 +14,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from llmbench.config import SweepConfig, load_engine_profile, load_sweep_config
+from llmbench.config import SweepConfig, load_cost_config, load_engine_profile, load_sweep_config
 from llmbench.schema import EngineName
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
@@ -151,11 +151,19 @@ class TestStrictness:
             SweepConfig.model_validate(raw)
 
     def test_descending_rates_are_rejected(self) -> None:
-        """The runner ramps upward and stops at first sustained saturation,
-        which only works if rates ascend."""
+        """Ascending keeps the low-load end of a curve complete if a sweep is
+        interrupted. (The runner measures every rate; it never stops early.)"""
         raw = minimal()
         raw["workload"]["request_rates_rps"] = [8.0, 2.0]  # type: ignore[index]
         with pytest.raises(ValidationError, match="ascending"):
+            SweepConfig.model_validate(raw)
+
+    def test_ladder_must_be_poisson(self) -> None:
+        """Regression. The key was validated and then ignored, so declaring a
+        trace-replay ladder silently ran Poisson."""
+        raw = minimal()
+        raw["workload"]["arrival_process"] = "trace-replay"  # type: ignore[index]
+        with pytest.raises(ValidationError, match="must be 'poisson'"):
             SweepConfig.model_validate(raw)
 
     def test_non_positive_rate_is_rejected(self) -> None:
@@ -191,3 +199,22 @@ class TestYamlHygiene:
     @pytest.mark.parametrize("path", sorted(CONFIGS.rglob("*.yaml")), ids=lambda p: p.name)
     def test_every_committed_yaml_parses(self, path: Path) -> None:
         assert isinstance(yaml.safe_load(path.read_text()), dict)
+
+
+class TestCostConfig:
+    """configs/cost.yaml, validated like every other configuration file."""
+
+    def test_committed_cost_file_is_valid(self) -> None:
+        cost = load_cost_config(Path("configs/cost.yaml"))
+        assert cost.reference.gpu_hourly_usd > 0
+        assert cost.sla_targets.p95_ttft_ms
+
+    def test_a_misspelt_key_fails_loudly(self, tmp_path: Path) -> None:
+        """It used to be read with a bare yaml.safe_load: a typo raised a
+        KeyError mid-report, and an extra key was silently ignored."""
+        raw = yaml.safe_load(Path("configs/cost.yaml").read_text())
+        raw["reference"]["gpu_hourly_usd_typo"] = raw["reference"].pop("gpu_hourly_usd")
+        path = tmp_path / "cost.yaml"
+        path.write_text(yaml.safe_dump(raw))
+        with pytest.raises(ValidationError):
+            load_cost_config(path)

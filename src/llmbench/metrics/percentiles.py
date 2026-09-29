@@ -58,20 +58,29 @@ def percentile(sorted_values: Sequence[float], q: float) -> float:
     return float(sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight)
 
 
-def _stdev(values: Sequence[float], mean: float) -> float:
-    """Population standard deviation.
+def _stdev(values: Sequence[float], mean: float, *, sample: bool = False) -> float:
+    """Standard deviation, population by default.
 
-    Population rather than sample: these are complete observations of a run, not
-    a sample drawn from it. Matches ``numpy.std`` default (ddof=0).
+    Population for the requests of one run: those are complete observations of
+    the run, not a draw from it. Matches ``numpy.std`` default (ddof=0).
+
+    Sample (``n - 1``) when the values are *repeats* -- one number per run,
+    aggregated across three to eleven runs. Those are a draw from the runs that
+    could have been made, and with three of them the population formula
+    understates the spread by a factor of sqrt(2/3), about 18 %, which every
+    error bar and pooled standard error inherited until this was separated.
     """
     if len(values) < 2:
         return 0.0
-    variance = sum((v - mean) ** 2 for v in values) / len(values)
+    denominator = len(values) - 1 if sample else len(values)
+    variance = sum((v - mean) ** 2 for v in values) / denominator
     return math.sqrt(variance)
 
 
-def summarize(values: Sequence[float]) -> Stats:
+def summarize(values: Sequence[float], *, sample: bool = False) -> Stats:
     """Summarise a sample into the schema's :class:`Stats` record.
+
+    ``sample=True`` for values that are repeats across runs (see :func:`_stdev`).
 
     An empty sample yields an all-zero record with ``count=0`` rather than
     raising. A run that completed no requests still has to produce a valid,
@@ -89,7 +98,7 @@ def summarize(values: Sequence[float]) -> Stats:
     return Stats(
         count=len(ordered),
         mean=mean,
-        std=_stdev(ordered, mean),
+        std=_stdev(ordered, mean, sample=sample),
         min=ordered[0],
         p50=percentile(ordered, 50.0),
         p90=percentile(ordered, 90.0),

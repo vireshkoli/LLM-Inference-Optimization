@@ -109,13 +109,13 @@ class ProcessComparison:
 
 def _aggregate_ttft(runs: Sequence[RunResult]) -> tuple[float, float, float, float, float]:
     """Mean TTFT p50/p95/p99, p99 spread, and throughput across repeats."""
-    p99 = summarize([r.ttft_s.p99 for r in runs])
+    p99 = summarize([r.ttft_s.p99 for r in runs], sample=True)
     return (
-        summarize([r.ttft_s.p50 for r in runs]).mean * 1e3,
-        summarize([r.ttft_s.p95 for r in runs]).mean * 1e3,
+        summarize([r.ttft_s.p50 for r in runs], sample=True).mean * 1e3,
+        summarize([r.ttft_s.p95 for r in runs], sample=True).mean * 1e3,
         p99.mean * 1e3,
         p99.std * 1e3,
-        summarize([r.output_token_throughput for r in runs]).mean,
+        summarize([r.output_token_throughput for r in runs], sample=True).mean,
     )
 
 
@@ -203,11 +203,12 @@ def process_comparison(
         if not by_conc:
             return None
         if concurrency is None:
-            target = summarize([r.output_token_throughput for r in baseline]).mean
+            target = summarize([r.output_token_throughput for r in baseline], sample=True).mean
             concurrency = min(
                 by_conc,
                 key=lambda n: abs(
-                    summarize([r.output_token_throughput for r in by_conc[n]]).mean - target
+                    summarize([r.output_token_throughput for r in by_conc[n]], sample=True).mean
+                    - target
                 ),
             )
         if concurrency not in by_conc:
@@ -290,9 +291,14 @@ def drift_comparison(
 ) -> DriftComparison | None:
     """Compare a canary re-run against the original measurement.
 
-    A canary is the same configuration measured again *hours later*, so the two
-    groups are separated by finding the largest gap in start time. Two guards
-    stop that from inventing a canary out of ordinary repeats:
+    A canary is the same configuration measured again *hours later*. Runs are
+    grouped into sessions separated by at least ``min_separation_s``; the first
+    session is the original and the second is the canary. Later sessions are
+    other experiments that happen to re-measure the same point -- the arrival
+    study's Poisson draws, for one -- and are left out: splitting on the single
+    largest gap once pooled the canary with five arrival-study runs a week
+    later and reported the mixture as "the re-run". Two guards stop a canary
+    being invented out of ordinary repeats:
 
     ``min_separation_s`` — consecutive repeats of one rate point run minutes
     apart, so the largest gap between them is small. Without a floor, splitting
@@ -319,29 +325,26 @@ def drift_comparison(
         return None
 
     same = sorted(same, key=lambda r: r.started_at)
-    # Split on the largest gap in start time: the canary runs at the end of the
-    # sweep, hours after the original, so the seam is unambiguous.
-    gaps = [
-        (b.started_at - a.started_at, i + 1) for i, (a, b) in enumerate(itertools.pairwise(same))
-    ]
-    if not gaps:
+    sessions: list[list[RunResult]] = [[same[0]]]
+    for a, b in itertools.pairwise(same):
+        if (b.started_at - a.started_at).total_seconds() >= min_separation_s:
+            sessions.append([])
+        sessions[-1].append(b)
+    if len(sessions) < 2:
         return None
-    largest, split = max(gaps, key=lambda g: g[0])
-    if largest.total_seconds() < min_separation_s:
-        return None
-    first, later = same[:split], same[split:]
+    first, later = sessions[0], sessions[1]
     if len(first) < min_repeats_per_side or len(later) < min_repeats_per_side:
         return None
 
-    first_ttft = summarize([r.ttft_s.p95 * 1e3 for r in first])
-    later_ttft = summarize([r.ttft_s.p95 * 1e3 for r in later])
+    first_ttft = summarize([r.ttft_s.p95 * 1e3 for r in first], sample=True)
+    later_ttft = summarize([r.ttft_s.p95 * 1e3 for r in later], sample=True)
 
     return DriftComparison(
         config_id=canary_label,
         rate_rps=rate_rps,
         first_ttft_p95_ms=first_ttft.mean,
         later_ttft_p95_ms=later_ttft.mean,
-        first_throughput=summarize([r.output_token_throughput for r in first]).mean,
-        later_throughput=summarize([r.output_token_throughput for r in later]).mean,
+        first_throughput=summarize([r.output_token_throughput for r in first], sample=True).mean,
+        later_throughput=summarize([r.output_token_throughput for r in later], sample=True).mean,
         first_ttft_std_ms=first_ttft.std,
     )

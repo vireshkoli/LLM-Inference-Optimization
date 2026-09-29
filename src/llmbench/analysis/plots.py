@@ -10,8 +10,10 @@ Design constraints applied throughout:
 
 * **One y-axis, never two.** TTFT and TPOT have different scales and different
   meanings; they get separate figures rather than a dual-axis chart.
-* **Colour follows the configuration, never its rank**, and hues are assigned in
-  fixed order, so filtering the set never repaints the survivors.
+* **Colour follows the configuration, never its rank.** Hues come from a fixed
+  palette in the order configurations first appear in the results, so the same
+  results always render in the same colours. (Removing a configuration can shift
+  the ones after it; the direct label on every line is what identifies it.)
 * **Error bars are mandatory.** Every point is mean ± std across repeats; a
   benchmark chart without them invites the reader to assume one lucky run.
 * Invalid runs are excluded from the lines and reported in the caption rather
@@ -42,8 +44,7 @@ __all__ = [
 ]
 
 #: Validated categorical palette, fixed order (see the data-viz reference
-#: palette). Assigned by configuration identity and never cycled, so adding or
-#: removing a configuration cannot recolour the others.
+#: palette), assigned to configurations in the order they appear.
 SERIES_COLORS: tuple[str, ...] = (
     "#2a78d6",  # blue
     "#eb6834",  # orange
@@ -84,8 +85,8 @@ def _aggregate(runs: Sequence[RunResult], percentile: str) -> list[SeriesPoint]:
     points: list[SeriesPoint] = []
     for rate in sorted(by_rate):
         group = by_rate[rate]
-        throughput = summarize([r.output_token_throughput for r in group])
-        latency = summarize([getattr(r.ttft_s, percentile) * 1e3 for r in group])
+        throughput = summarize([r.output_token_throughput for r in group], sample=True)
+        latency = summarize([getattr(r.ttft_s, percentile) * 1e3 for r in group], sample=True)
         points.append(
             SeriesPoint(
                 rate_rps=rate,
@@ -109,8 +110,8 @@ def _aggregate_tpot(runs: Sequence[RunResult], percentile: str) -> list[SeriesPo
     points: list[SeriesPoint] = []
     for rate in sorted(by_rate):
         group = by_rate[rate]
-        throughput = summarize([r.output_token_throughput for r in group])
-        latency = summarize([getattr(r.tpot_s, percentile) * 1e3 for r in group])
+        throughput = summarize([r.output_token_throughput for r in group], sample=True)
+        latency = summarize([getattr(r.tpot_s, percentile) * 1e3 for r in group], sample=True)
         points.append(
             SeriesPoint(
                 rate_rps=rate,

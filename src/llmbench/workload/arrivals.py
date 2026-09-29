@@ -7,14 +7,16 @@ run, which is what makes cross-configuration comparison meaningful.
 **Open-loop.** A schedule is a list of wall-clock offsets fixed *before* the run
 begins. Requests are dispatched at those instants whether or not earlier
 requests have completed. A closed-loop generator instead waits for a completion
-before issuing the next request, so when the server slows the generator slows
-with it and the slow period is under-sampled — *coordinated omission*. The
-resulting tail latency is systematically optimistic, and the tail is the number
-people actually care about.
+before issuing the next request, so its offered load is a consequence of the
+server's speed rather than an input to the measurement. The textbook consequence
+is *coordinated omission* -- the slow periods are under-sampled and the tail
+looks optimistic -- though on this stack the measured error ran the other way
+(METHODOLOGY.md §2).
 
-``closed_loop_schedule`` exists only so the benchmark can *demonstrate* that
-error against its own open-loop numbers on identical hardware. It must never
-produce a headline result.
+The closed loop has no schedule to generate: it lives in
+:mod:`llmbench.loadgen.closed_loop`, exists only to demonstrate that difference
+against the open-loop numbers on identical hardware, and never produces a
+headline result.
 """
 
 from __future__ import annotations

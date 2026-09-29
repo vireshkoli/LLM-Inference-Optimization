@@ -1,15 +1,22 @@
 # Full measurement stack: engine + Prometheus + Grafana + DCGM exporter.
 #
-# This is the configuration the published results were actually produced with,
-# not a portable file written for appearances. Engines are declared behind
-# profiles so the observability stack can run continuously while engines are
-# started and torn down once per configuration by the sweep runner.
+# The observability services here are the ones the dashboards and screenshots in
+# docs/images came from. The engine services are a convenience for running an
+# engine by hand: the sweep runner does not use them -- it launches each engine
+# with `docker run` against a digest-pinned image (llmbench.engines.base), which
+# is what every result records. Engines are declared behind profiles so the
+# observability stack can run on its own.
 #
 #   Observability only:  docker compose -f docker/compose.full.yml up -d
 #   With an engine:      docker compose -f docker/compose.full.yml --profile vllm up -d
 #
-# Host-specific values (HF cache path, GPU index) come from .env — see
-# compose.override.example.yml.
+# Host-specific values (HF cache path, GPU index, image tags, ports) are
+# environment variables with defaults, written where they are used below.
+#
+# Every published port is bound to 127.0.0.1: Grafana runs with anonymous admin
+# access and the engines' OpenAI API has no authentication, so none of them may
+# listen on the network of a shared machine. Services reach each other over the
+# compose network, which is unaffected.
 
 x-gpu-device: &gpu-device
   # Selects a specific *host* GPU. Note it is renumbered to index 0 inside the
@@ -25,8 +32,8 @@ x-gpu-device: &gpu-device
 
 services:
   # ---------------------------------------------------------------------------
-  # Engines. Digest-pinned: a moving tag would make earlier results
-  # unreproducible, so `image` carries an explicit sha256.
+  # Engines, pinned by tag for convenience. Measurements do not come from these:
+  # the runner pins the image digest itself and records it in each result.
   # ---------------------------------------------------------------------------
   vllm:
     profiles: ["vllm"]
@@ -34,7 +41,10 @@ services:
     container_name: llmbench-vllm
     <<: *gpu-device
     ports:
-      - "${ENGINE_PORT:-8000}:8000"
+      - "127.0.0.1:${ENGINE_PORT:-8000}:8000"
+      # The Docker bridge gateway, which is what host.docker.internal resolves
+      # to, so Prometheus can scrape the engine without it facing the network.
+      - "${BRIDGE_GATEWAY:-172.17.0.1}:${ENGINE_PORT:-8000}:8000"
     volumes:
       # Read-only: the benchmark must never mutate the weights it measures.
       - ${HF_CACHE_DIR:-/home/ubuntu/.cache/huggingface}:/root/.cache/huggingface:ro
@@ -69,7 +79,10 @@ services:
     container_name: llmbench-sglang
     <<: *gpu-device
     ports:
-      - "${ENGINE_PORT:-8000}:8000"
+      - "127.0.0.1:${ENGINE_PORT:-8000}:8000"
+      # The Docker bridge gateway, which is what host.docker.internal resolves
+      # to, so Prometheus can scrape the engine without it facing the network.
+      - "${BRIDGE_GATEWAY:-172.17.0.1}:${ENGINE_PORT:-8000}:8000"
     volumes:
       - ${HF_CACHE_DIR:-/home/ubuntu/.cache/huggingface}:/root/.cache/huggingface:ro
     environment:
@@ -95,7 +108,7 @@ services:
     image: prom/prometheus:v3.1.0
     container_name: llmbench-prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -112,13 +125,14 @@ services:
     image: grafana/grafana:11.5.1
     container_name: llmbench-grafana
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
       - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
       - grafana-data:/var/lib/grafana
     environment:
-      # Local-only, read-only dashboards for screenshots. Not exposed publicly.
+      # Local-only dashboards for screenshots: the port is bound to loopback
+      # above, which is what makes anonymous admin acceptable here.
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
       - GF_AUTH_DISABLE_LOGIN_FORM=true
@@ -152,7 +166,7 @@ services:
     image: nvidia/dcgm-exporter:4.5.2-4.8.1-ubuntu22.04
     container_name: llmbench-dcgm
     ports:
-      - "9400:9400"
+      - "127.0.0.1:9400:9400"
     cap_add:
       - SYS_ADMIN
     deploy:

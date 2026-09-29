@@ -89,9 +89,9 @@ def operating_points(
 
     points: dict[str, list[ConfigOperatingPoint]] = {}
     for (config_id, rate), group in sorted(grouped.items()):
-        thr = summarize([r.output_token_throughput for r in group])
-        ttft = summarize([r.ttft_s.p95 for r in group])
-        tpot = summarize([r.tpot_s.p95 for r in group])
+        thr = summarize([r.output_token_throughput for r in group], sample=True)
+        ttft = summarize([r.ttft_s.p95 for r in group], sample=True)
+        tpot = summarize([r.tpot_s.p95 for r in group], sample=True)
         points.setdefault(config_id, []).append(
             ConfigOperatingPoint(
                 config_id=config_id,

@@ -20,6 +20,7 @@ silently corrupts results:
 
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 from abc import ABC, abstractmethod
@@ -63,6 +64,8 @@ class EngineLaunchSpec:
     startup_timeout_s: int = 900
     health_path: str = "/health"
     metrics_path: str = "/metrics"
+    #: Host addresses the engine's port is published on (see publish_addresses).
+    publish_addresses: tuple[str, ...] = ("127.0.0.1",)
 
     @property
     def base_url(self) -> str:
@@ -126,6 +129,31 @@ def resolve_digest(image: str, tag: str) -> str:
     return out.split("@", 1)[1]
 
 
+def publish_addresses() -> tuple[str, ...]:
+    """Host addresses to publish an engine's port on: loopback and the Docker bridge.
+
+    Loopback serves the load generator, lm-eval and the cross-validation
+    container, which runs on the host network. The bridge gateway is what
+    ``host.docker.internal`` resolves to inside containers, so the optional
+    Prometheus stack in ``docker/`` can still scrape the engine. Neither address
+    is reachable from another machine. If the gateway cannot be found, loopback
+    alone is used and only that scrape is lost.
+    """
+    try:
+        gateway = _docker(
+            ["network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}"]
+        )
+    except (subprocess.SubprocessError, OSError):
+        gateway = ""
+    return ("127.0.0.1", gateway) if gateway else ("127.0.0.1",)
+
+
+def _version_from_tag(tag: str) -> str | None:
+    """``v0.5.17-cu129`` -> ``0.5.17``; ``None`` for a tag with no version."""
+    match = re.search(r"(\d+\.\d+\.\d+)", tag)
+    return match.group(1) if match else None
+
+
 class EngineProcess(ABC):
     """Common container lifecycle; subclasses supply engine-specific argv."""
 
@@ -155,8 +183,15 @@ class EngineProcess(ABC):
             # Selects host GPU N; inside the container it appears as index 0.
             "--gpus",
             f'"device={spec.gpu_index}"',
-            "-p",
-            f"{spec.port}:{spec.port}",
+            # Never on every interface: the engine's OpenAI API has no
+            # authentication, and publishing it to the network of a shared
+            # machine hands the GPU -- and the measurement -- to anyone who can
+            # reach the port. See publish_addresses() for the two it does use.
+            *(
+                arg
+                for address in spec.publish_addresses
+                for arg in ("-p", f"{address}:{spec.port}:{spec.port}")
+            ),
             "-v",
             f"{spec.hf_cache_dir}:/root/.cache/huggingface:ro",
             # vLLM and SGLang both need more than Docker's default 64 MB of
@@ -212,10 +247,16 @@ class EngineProcess(ABC):
                 f"Last 1500 chars:\n{failure_log[-1500:]}"
             ) from None
 
+        version = self.parse_version(log)
+        if version == "unknown":
+            # SGLang prints no version at start-up, so all 48 SGLang records
+            # made before this fallback say "unknown". The image tag names the
+            # release, and the digest recorded beside it pins the exact build.
+            version = _version_from_tag(spec.tag) or version
         return EngineHandle(
             spec=spec,
             container_id=container_id,
-            engine_version=self.parse_version(log),
+            engine_version=version,
             selected_kernel=selected,
             startup_log=log,
             startup_duration_s=time.perf_counter() - began,

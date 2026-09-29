@@ -99,3 +99,19 @@ class TestRejectsIncoherentConfiguration:
     async def test_more_warmup_than_requests_is_refused(self) -> None:
         with pytest.raises(ValueError, match="exceeds total requests"):
             await run_closed_loop(specs(4), CONFIG, concurrency=2, warmup_requests=9)
+
+
+class TestDispatchTimes:
+    @pytest.mark.asyncio
+    async def test_the_first_n_requests_leave_together(self) -> None:
+        """The start-up burst, visible in the records: every worker fires at
+        once, then each waits for its own completion. Without a dispatch time in
+        the record the closed loop's burst could not be seen in its data."""
+        server = MockLLMServer(ttft_s=0.05, itl_s=0.002)
+        async with client_for(server) as client:
+            result = await run_closed_loop(specs(12), CONFIG, concurrency=4, client=client)
+        offsets = [r.dispatch_offset_s for r in result.records]
+        assert all(o is not None for o in offsets)
+        first, rest = offsets[:4], offsets[4:]
+        assert max(o for o in first if o is not None) < 0.03
+        assert min(o for o in rest if o is not None) > 0.05

@@ -22,12 +22,18 @@ from pathlib import Path
 import httpx
 
 from llmbench.config import SweepConfig, load_engine_profile
-from llmbench.engines.base import EngineHandle, EngineLaunchSpec, EngineProcess, resolve_digest
+from llmbench.engines.base import (
+    EngineHandle,
+    EngineLaunchSpec,
+    EngineProcess,
+    publish_addresses,
+    resolve_digest,
+)
 from llmbench.engines.preflight import PreflightReport, run_preflight
 from llmbench.engines.sglang import SglangEngine
 from llmbench.engines.vllm import VllmEngine
 from llmbench.quality.datasets import load_wikitext_tokens
-from llmbench.quality.harness import HarnessConfig, HarnessError, run_lm_eval
+from llmbench.quality.harness import LM_EVAL_SEED, HarnessConfig, HarnessError, run_lm_eval
 from llmbench.quality.perplexity import compute_perplexity
 from llmbench.runner import environment_info
 from llmbench.schema import (
@@ -100,6 +106,8 @@ class QualityRunner:
             startup_timeout_s=profile.startup_timeout_s,
             health_path=profile.health_path,
             metrics_path=profile.metrics_path,
+            extra_args=dict(profile.args),
+            publish_addresses=publish_addresses(),
         )
         return spec, _ENGINES[entry.engine]()
 
@@ -187,6 +195,7 @@ class QualityRunner:
                 gpu_memory_utilization=spec.gpu_memory_utilization,
                 max_num_seqs=spec.max_num_seqs,
                 selected_kernel=handle.selected_kernel,
+                extra_args=dict(spec.extra_args),
             ),
             model=ModelConfig(
                 hf_id=quant.hf_id,
@@ -198,7 +207,10 @@ class QualityRunner:
             ),
             hardware=environment_info(self.gpu_index, preflight),
             temperature=0.0,
-            seed=self.config.workload.seed,
+            # The seed lm-eval was run with. The six records made before this
+            # fix carry the latency workload's seed (20260810) here instead,
+            # although lm-eval and the engines ran with seed 0.
+            seed=LM_EVAL_SEED,
             max_concurrency=QUALITY_CONCURRENCY,
             scores=scores,
         )

@@ -53,12 +53,21 @@ args:
 #
 # VERIFIED against real vLLM v0.26.0 output, which prints e.g.
 #   [auto_gptq.py:357] Using MarlinLinearKernel for AutoGPTQLinearMethod
+#   [auto_awq.py:473] Using MarlinLinearKernel for AutoAWQMarlinLinearMethod
+#   [__init__.py:670] Selected CutlassInt8ScaledMMLinearKernel for CompressedTensorsW8A8Int8
 # NOT the older "gptq_marlin" spelling. Patterns match the kernel/method pairing
 # so they survive either wording. Order matters: specific before generic.
+# Lines saying a kernel is unsupported or being fallen back from are dropped
+# before matching (llmbench.engines.kernels), so only a kernel in use counts.
+#
+# The INT8 pattern names the CUTLASS kernel *and* the W8A8 scheme on one line.
+# Looser alternatives once matched the engine's config dump -- the model name
+# contains "w8a8" -- so the assertion passed without ever seeing the kernel line;
+# and "cutlass[a-z]*scaledmm" could never match "CutlassInt8ScaledMM" (the 8).
 kernel_log_patterns:
   gptq_marlin: "(?i)(gptq_?marlin|marlinlinearkernel[^\\n]*gptqlinearmethod)"
   awq_marlin: "(?i)(awq_?marlin|marlinlinearkernel[^\\n]*awqlinearmethod)"
-  compressed-tensors-w8a8-int8: "(?i)(cutlass[a-z]*scaledmm|compressedtensorsw8a8|compressed[- ]tensors[^\\n]*w8a8|w8a8[^\\n]*int8)"
+  compressed-tensors-w8a8-int8: "(?i)cutlass\\w*scaledmm\\w*[^\\n]*compressedtensorsw8a8int8"
   # Deliberately no \b after "marlin": the real log says "MarlinLinearKernel",
   # and a word boundary there matches nothing.
   marlin_generic: "(?i)marlin"

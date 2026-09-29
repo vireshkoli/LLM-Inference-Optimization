@@ -61,7 +61,7 @@
 
   <h1>Quantized LLM serving on an NVIDIA A40</h1>
   <p class="lede" id="lede">
-    Llama-3.1-8B-Instruct &middot; open-loop Poisson arrivals, at least 3 repeats per point,
+    Llama-3.1-8B-Instruct &middot; open-loop Poisson arrivals, repeated measurements,
     clocks locked, kernels asserted from engine logs.
   </p>
   <p class="lede">
@@ -110,15 +110,16 @@
       <tbody></tbody>
     </table></div>
     <p class="note">
-      Throughput is mean across repeats. Cost assumes $0.40/GPU-hour (RunPod A40 community
-      cloud, accessed 2026-08-10) &mdash; an assumption, stated as one, because the measurement
-      GPU is a lab machine with no invoice.
+      Throughput is mean across repeats. Cost assumes <span id="price">the reference price</span>
+      per GPU-hour from <code>configs/cost.yaml</code> &mdash; an assumption, stated as one,
+      because the measurement GPU is a lab machine with no invoice.
     </p>
   </div>
 
   <footer>
-    Generated from <code>results/runs/*.json</code> by <code>make report</code>. Nothing on this
-    page is hand-typed. Full methodology, known confounds and limitations are in the repository.
+    Generated from <code>results/runs/*.json</code> by <code>make report</code>. Every number on
+    this page is computed from that data as the page loads. Full methodology, known confounds and
+    limitations are in the repository.
   </footer>
 </div>
 
@@ -266,6 +267,11 @@ fetch("results.json")
       `${data.length} reportable operating points from ${repeats} runs &middot; ` +
       `${CONFIGS.length} configurations &middot; Llama-3.1-8B-Instruct &middot; ` +
       "open-loop Poisson arrivals, clocks locked, kernels asserted from engine logs.";
+    // The price is recovered from any row -- cost = price / (tokens/s x 3600) x 1e6 --
+    // so the note cannot drift from the price the costs were computed with.
+    const r0 = data[0];
+    const price = r0.cost_per_1m_usd * r0.throughput_tokens_s * 3600 / 1e6;
+    document.getElementById("price").textContent = "$" + price.toFixed(2);
     document.getElementById("sla").addEventListener("input", refresh);
     window.matchMedia("(prefers-color-scheme: dark)")
           .addEventListener("change", () => renderChart(Number(document.getElementById("sla").value)));

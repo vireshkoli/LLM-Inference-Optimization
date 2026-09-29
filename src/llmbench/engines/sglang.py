@@ -18,7 +18,9 @@ from llmbench.engines.base import EngineLaunchSpec, EngineProcess
 
 __all__ = ["SglangEngine"]
 
-#: Documented in every result so the reader can judge the comparison.
+#: How vLLM's knobs map onto SGLang's. Stated here next to the flags, in
+#: configs/engines/sglang.yaml (``parity_notes``) and in METHODOLOGY.md; the
+#: results record the flags themselves (``engine.extra_args``), not these notes.
 PARITY_CAVEATS = {
     "gpu_memory_utilization": "maps to --mem-fraction-static (not semantically identical)",
     "max_num_seqs": "maps to --max-running-requests",
@@ -48,11 +50,10 @@ class SglangEngine(EngineProcess):
             str(spec.gpu_memory_utilization),
             "--max-running-requests",
             str(spec.max_num_seqs),
-            # Prometheus metrics are opt-in on SGLang, unlike vLLM.
-            "--enable-metrics",
-            "--random-seed",
-            "0",
         ]
+        # Flags shared by every SGLang configuration -- `--enable-metrics`
+        # (Prometheus is opt-in on SGLang, unlike vLLM) and `--random-seed 0` --
+        # come from the `args` of configs/engines/sglang.yaml via extra_args.
         for key, value in spec.extra_args.items():
             args.append(key)
             if value:

@@ -1,9 +1,9 @@
 """The static results explorer.
 
-Its logic is exercised under node elsewhere with the chart library stubbed —
-which is precisely how a pinned CDN URL that returned 404 went unnoticed for
-two releases while the slider and table kept working. These tests check the
-things a stub cannot.
+The page's JavaScript has no automated test in this repository; it was checked
+by hand in a browser with the chart library stubbed -- which is precisely how a
+pinned CDN URL that returned 404 went unnoticed for two releases while the
+slider and table kept working. These tests check the things a stub cannot.
 """
 
 from __future__ import annotations
@@ -56,3 +56,9 @@ class TestDataContract:
         """Absolute paths would break the moment the page is served from a
         different origin — GitHub Pages and a Hugging Face Space both host it."""
         assert 'fetch("results.json")' in INDEX.read_text()
+
+    def test_no_price_is_typed_into_the_page(self) -> None:
+        """The cost note once stated $0.40 in the HTML while the costs came from
+        configs/cost.yaml; the page now recovers the price from the data."""
+        assert "$0." not in INDEX.read_text()
+        assert 'getElementById("price")' in INDEX.read_text()
