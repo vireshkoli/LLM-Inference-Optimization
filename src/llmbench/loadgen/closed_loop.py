@@ -9,18 +9,23 @@ issue a request, wait for it to complete, issue the next. The offered load is
 therefore a consequence of the server's speed — the generator and the thing
 under test are coupled.
 
-**What that coupling did here was not what the textbook says.** The classic
-objection is *coordinated omission*: when the server stalls, the generator
-stalls with it, the slow period is under-sampled, and the reported tail is
-optimistic. This exhibit was built to measure that error and found the opposite
-sign. At throughput-matched points the closed loop never understates the
-open-loop p99; near the knee it reports a tail 3.3-3.7x *worse*. A
-continuous-batching engine below saturation has no stalls to hide, and what the
-closed loop does instead is hold occupancy at a constant maximum, so every new
-request's prefill competes with a full batch of decodes. Poisson arrivals at
-the same mean let occupancy fluctuate. Either way, a coupled generator does not
-measure the tail a real arrival process would see — which is the reason
-open-loop is used, and the reason this generator is an exhibit.
+**What that coupling did here depends on load.** The classic objection is
+*coordinated omission*: when the server stalls, the generator stalls with it,
+the slow period is under-sampled, and the reported tail is optimistic. Near
+capacity that is what this exhibit measures: at matched throughput the closed
+loop understates the open-loop p99. At light load the sign reverses -- at 1 rps
+its p99 is 1.6x worse -- because a continuous-batching engine below saturation
+has no stalls to hide, and the closed loop instead holds occupancy at a constant
+maximum, so every new request's prefill competes with a full batch of decodes.
+Either way, a coupled generator does not measure the tail a real arrival process
+would see -- which is the reason open-loop is used, and the reason this
+generator is an exhibit.
+
+**Its start-up burst.** All N workers fire at once, so the first N requests
+arrive together, which no steady-state closed loop produces. The runner warms up
+for at least N requests so the burst is never measured; before it did, the
+burst's tail made the near-knee rows look three to four times *worse* than open
+loop, the opposite of the effect above.
 
 **Why the comparison is fair.** The exhibit is run at a concurrency chosen so
 its *achieved* throughput matches an open-loop run's, and it draws from the same

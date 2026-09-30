@@ -232,12 +232,12 @@
   {
     "config_id": "vllm-bf16",
     "rate_rps": 4.0,
-    "throughput_tokens_s": 1052.48,
-    "throughput_std": 35.4,
-    "ttft_p95_ms": 262.84,
-    "tpot_p95_ms": 45.378,
-    "cost_per_1m_usd": 0.10557,
-    "repeats": 11
+    "throughput_tokens_s": 1061.69,
+    "throughput_std": 36.75,
+    "ttft_p95_ms": 275.44,
+    "tpot_p95_ms": 45.911,
+    "cost_per_1m_usd": 0.10465,
+    "repeats": 16
   },
   {
     "config_id": "vllm-bf16",

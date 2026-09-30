@@ -13,7 +13,7 @@ re-checked against the clocks sampled during it), kernel selection asserted from
 logs, plus the runs that test the method itself (§6).
 
 <!-- BEGIN:headline -->
-**244 measured runs** across 6 configurations, 6 quality evaluations, open-loop, at least three repeats per point.
+**266 measured runs** across 6 configurations, 6 quality evaluations, open-loop, at least three repeats per point.
 
 Under a **p95 TTFT budget of 500 ms**, `vllm-int8-w8a8` is cost-optimal: **2116 output tokens/sec at $0.0525 per million tokens** — 27 % cheaper than `vllm-bf16`. `vllm-bf16` is dominated: 4 configurations are cheaper at equal-or-better measured quality.
 
@@ -187,7 +187,7 @@ point is not an operating point anyone could provision for.
 | `vllm-awq-int4` | 8 rps | 2035 ± 3 tok/s | 3288 ms | 129.2 ms | $0.0546 | 3 |
 | `vllm-bf16` | 1 rps | 265 ± 0 tok/s | 168 ms | 32.6 ms | $0.4197 | 6 |
 | `vllm-bf16` | 2 rps | 565 ± 1 tok/s | 152 ms | 36.0 ms | $0.1965 | 6 |
-| `vllm-bf16` | 4 rps | 1052 ± 35 tok/s | 263 ms | 45.4 ms | $0.1056 | 11 |
+| `vllm-bf16` | 4 rps | 1062 ± 37 tok/s | 275 ms | 45.9 ms | $0.1047 | 16 |
 | `vllm-bf16` | 5 rps | 1284 ± 0 tok/s | 364 ms | 55.6 ms | $0.0865 | 6 |
 | `vllm-bf16` | 6 rps | 1539 ± 0 tok/s | 481 ms | 66.1 ms | $0.0722 | 6 |
 | `vllm-bf16` | 7 rps | 1748 ± 1 tok/s | 678 ms | 109.5 ms | $0.0636 | 6 |
@@ -236,7 +236,7 @@ configuration is grossly broken, which is what they can actually support.
 <!-- BEGIN:validity -->
 | Validity | Runs | Meaning |
 |---|---|---|
-| `valid` | 187 | reportable |
+| `valid` | 209 | reportable |
 | `oversubscribed` | 57 | offered load beyond capacity; latency reflects run duration |
 <!-- END:validity -->
 
@@ -262,63 +262,61 @@ exists for each open-loop rate, because a tail comparison across different loads
 load, not the generator. The trace replay is designed as several independent, non-overlapping
 windows against as many independent Poisson seeds, interleaved, because one seeded schedule
 repeated three times measures the server's variability rather than the arrival process's.
-**In the committed data that design was not achieved:** a bug in window selection, fixed in
-v0.2.3, made all five trace replays the same window (the one closest to 4 rps, CV² 1.02). The
-trace row below therefore compares one stretch of real traffic, replayed five times, with five
-Poisson draws.
+The first arrival study did not achieve that design: a bug in window selection made all five
+trace replays the same window. It was re-run with the fix: five non-overlapping windows of the
+trace, each time-scaled to exactly 4 rps (factors 1.00–1.11, which leave CV² unchanged; the
+windows' CV² runs from 0.99 to 1.61), interleaved with five fresh Poisson draws. That study is
+the trace row below; the earlier runs remain in `results/runs` as history.
 
 <!-- BEGIN:methodology-table -->
 | Arrival process | Matched to | TTFT p50 | TTFT p95 | TTFT p99 | Throughput | Tail vs open-loop Poisson |
 |---|---|---|---|---|---|---|
-| **Open-loop Poisson** (baseline) | 4 rps | 160 ms | 304 ms | 538 ms | 1082 tok/s | — |
-| Azure trace replay | 4 rps | 159 ms | 313 ms | 542 ms | 1056 tok/s | indistinguishable (+4 ms against ±24 ms) |
+| **Open-loop Poisson** (baseline) | 4 rps | 155 ms | 303 ms | 521 ms | 1082 tok/s | — |
+| Azure trace replay | 4 rps | 159 ms | 318 ms | 545 ms | 1102 tok/s | indistinguishable (+24 ms against ±36 ms) |
 | Closed loop (N=8) | 1 rps (250 ms p99) | 91 ms | 199 ms | 402 ms | 252 tok/s | **1.6x worse** (p99 +151 ms) |
 | Closed loop (N=48) | 4 rps (538 ms p99) | 153 ms | 294 ms | 543 ms | 1040 tok/s | indistinguishable (+4 ms against ±23 ms) |
-| Closed loop (N=64) | 5 rps (623 ms p99) | 171 ms | 359 ms | 2159 ms | 1211 tok/s | **3.5x worse** (p99 +1536 ms) |
-| Closed loop (N=96) | 6 rps (714 ms p99) | 213 ms | 680 ms | 2672 ms | 1563 tok/s | **3.7x worse** (p99 +1957 ms) |
-| Closed loop (N=128) | 7 rps (988 ms p99) | 261 ms | 2348 ms | 3308 ms | 1733 tok/s | **3.3x worse** (p99 +2320 ms) |
+| Closed loop (N=64) | 5 rps (623 ms p99) | 169 ms | 300 ms | 582 ms | 1210 tok/s | **1.07x understated** (p99 -41 ms) |
+| Closed loop (N=96) | 6 rps (714 ms p99) | 207 ms | 442 ms | 684 ms | 1538 tok/s | **1.04x understated** (p99 -31 ms) |
+| Closed loop (N=160) | 7 rps (988 ms p99) | 315 ms | 643 ms | 828 ms | 1692 tok/s | **1.19x understated** (p99 -159 ms) |
 <!-- END:methodology-table -->
 
-**This repository's own premise was wrong in direction, and the exhibit is what showed it.**
-The textbook objection to closed-loop generators is *coordinated omission*: when the server
-stalls, a generator that waits for completions stops sampling, so the slow periods are
-under-represented and the reported tail is optimistic. That was the claim here, and it
-predicted that the closed-loop rows would *understate* the open-loop p99.
+**The closed loop's error changes sign with load — and its first measurement was wrong.** The
+textbook objection to closed-loop generators is *coordinated omission*: when the server stalls, a
+generator that waits for completions stops sampling, so the slow periods are under-represented
+and the reported tail is optimistic. That was the claim here, and it predicted that the
+closed-loop rows would *understate* the open-loop p99.
 
-Measured, they never do. At 4 rps the two generators are indistinguishable; at 1 rps the closed
-loop's p99 is 1.6× worse; at 5–7 rps it reports a tail **three to four times worse** than
-open-loop Poisson at the same throughput. **Part of that near-knee gap is probably an artefact of
-the harness, not of the generator:** all N workers start at the same instant, and with N above
-the 50-request warm-up (N = 64 to 160) the tail of that start-up burst — up to 110 requests —
-was measured. The percentile that jumps tracks the burst's share of the sample: p99 at N = 64
-(1.9 % of requests), p95 as well from N = 128 (6.2 %). Per-request records were not kept, so
-this cannot be confirmed from the committed data; v0.2.3 warms up through the whole burst and
-keeps per-request records, and the near-knee rows are to be re-measured with it. Until then,
-read 3–4× as an upper bound. The 1 rps row has no burst in its sample and is still worse, so
-an effect of some size is real. The mechanism proposed for it is not coordinated omission but
-its opposite. A continuous-
-batching engine below saturation has no stalls to hide, so the classic error has nothing to
-act on. What the closed loop does instead is pin occupancy at a constant maximum: every new
-request arrives into a server already running N−1 others, so its prefill always competes with
-a full batch of decodes. Poisson arrivals at the same mean let occupancy fluctuate, and the
-requests that arrive into a lull get fast prefill. The closed loop cannot produce a lull.
+The first measurement appeared to refute it: near the knee the closed loop reported a p99 three
+to four times *worse*. That was an artefact of the harness. All N workers start at the same
+instant, and with N above the 50-request warm-up (N = 64 to 160) the tail of that start-up burst
+was in the measured sample. Re-measured with a warm-up of at least N, and with per-request
+records kept, the burst requests alone reach 2.2–4.0 s — exactly where the old p99 sat — while
+the measured requests do not. Near the knee the closed loop now does what the textbook says: it
+understates the open-loop p99, modestly (the table). At 4 rps the two generators are
+indistinguishable.
 
-Open-loop remains the correct methodology — but for a reason the measurement had to supply.
-The argument is not that a closed loop flatters the server; on this stack it slanders it.
-The argument is that a closed loop's load is a *consequence of the server's speed*, so it
-cannot measure the server against any load a real deployment would actually receive. Both
-errors are the same error: the generator and the thing under test are coupled.
+At light load the sign genuinely reverses: at 1 rps the closed loop's p99 is 1.6× worse, with no
+burst in its sample. The proposed mechanism is occupancy. A continuous-batching engine below
+saturation has no stalls for coordinated omission to hide; what a closed loop does instead is hold
+occupancy at its maximum, so every new request's prefill competes with a full batch of decodes,
+while Poisson arrivals at the same mean let occupancy fluctuate and requests that land in a lull
+get fast prefill. Near capacity the server does stall, and the textbook effect takes over.
 
-The near-knee closed-loop rows (N = 96, 128) were measured on GPU 0 against an open-loop ladder
-measured on GPU 1. Both cards are the same model at the same locked clock, and the 4 rps row —
-measured on the same card as its baseline — shows the same null result below the knee, so the
-card cannot be what produces the sign at the knee. It is stated rather than hidden.
+Open-loop remains the correct methodology, for the one reason that holds at every load: a closed
+loop's offered load is a *consequence of the server's speed*, so it cannot measure the server
+against any load a real deployment would actually receive. Pessimistic at light load, optimistic
+near capacity — an error that changes sign with the thing being measured is what a generator
+coupled to its subject produces.
 
-**For the window replayed, the Poisson assumption costs nothing measurable.** The trace replay's
-p99 sits inside the interval shown in the table, which agrees with that window's inter-arrival
-CV² of 1.02 (Poisson: 1.00). Because the five replays were one window, this shows that one
-stretch of real traffic behaves like Poisson at this rate, not yet that the traffic does in
-general.
+The re-measured near-knee rows ran on GPU 1, the same card as their open-loop baseline; the first
+measurement's N = 96 and 128 rows had run on GPU 0. Those first runs are kept in `results/runs`
+as history (`vllm-bf16-closed-loop-warmup50__*`); the comparison uses the latest session.
+
+**At this rate the Poisson assumption costs nothing measurable.** Across five distinct windows
+of real traffic, the trace's p99 sits inside the interval shown in the table. The one clearly
+bursty window (CV² 1.61) produced the highest p99 of all ten runs, so burstier traffic may well
+cost the tail something; five windows cannot resolve an effect of that size, and on average
+there is none to see.
 
 ### Environmental drift across the sweep
 
@@ -386,7 +384,7 @@ primary axis and got the GPU-hours. Two observations:
 |---|---|---|---|---|---|
 | 1 rps | bf16 | 265 | 265 | 168 ms | 143 ms |
 | 1 rps | awq-int4 | 286 | 287 | 104 ms | 122 ms |
-| 4 rps | bf16 | 1052 | 1026 | 263 ms | 224 ms |
+| 4 rps | bf16 | 1062 | 1026 | 275 ms | 224 ms |
 | 4 rps | awq-int4 | 1112 | 1112 | 194 ms | 217 ms |
 | 8 rps | bf16 | — | 1965 | — | 2670 ms |
 | 8 rps | awq-int4 | 2035 | 2054 | 3288 ms | 1465 ms |
@@ -406,8 +404,8 @@ startup logs. It was not investigated further and is reported as an observation.
 
 **A confound applies to this section specifically.** Both SGLang configurations were measured
 with a busy neighbour GPU in the same chassis, while most of the vLLM ladder was not. That
-stamp travels with every affected record. Its measured effect across the 187 valid runs is
-1.3 °C *cooler* at the same mean SM clock (within 1 MHz) for busy-neighbour runs, with zero
+stamp travels with every affected record. Its measured effect across the 209 valid runs is
+1.5 °C *cooler* at essentially the same mean SM clock (within 3 MHz) for busy-neighbour runs, with zero
 throttled samples anywhere — the opposite direction to the feared effect, and small. The comparison is reported
 with the asterisk rather than without it.
 
@@ -441,14 +439,11 @@ with the asterisk rather than without it.
   its achieved rate falls below 80 % of the offered one, measured over a window that includes the
   drain after the last request. The highest valid rate of INT4 (8 rps) and INT8 (9 rps) are
   runs whose queue was still growing. From v0.2.3 such runs carry a note saying so.
-- **The near-knee closed-loop rows were measured on a different physical GPU** from their
-  open-loop baseline (§6). Same model, same locked clock, and the same-card comparison below the
-  knee shows the same null; the confound cannot produce the sign at the knee, but it is there.
-- **The closed-loop exhibit contradicts this repository's stated premise** (§6). The document
-  says so where the premise was made rather than quietly rewording it. Its near-knee rows are
-  inflated by an artefact of the harness and are pending re-measurement.
-- **The arrival study replayed one trace window, not five** (§6), because of a window-selection
-  bug fixed in v0.2.3; a re-run with distinct windows is pending.
+- **The closed loop's error changes sign with load** (§6). Its first measurement, a
+  three-to-four-fold *worse* tail at the knee, was a harness artefact and was re-measured. The
+  light-load effect is real, but its occupancy mechanism is proposed, not isolated.
+- **The arrival study covers one trace at one rate.** Five windows of the Azure conversation
+  trace at 4 rps (§6); other traces, and rates nearer the knee, were not measured.
 - **The cost figure is a public reference price, not an invoice.** The measurement GPU is a lab
   machine. Because every configuration runs on the same GPU, the price is a linear scalar and
   cannot reorder the ranking — which is why no price-sensitivity table appears here.

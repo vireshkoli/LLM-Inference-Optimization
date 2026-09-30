@@ -8,7 +8,8 @@ importantly — what is wrong with the setup anyway.
 > could not be retrofitted to flatter them. Every section is now filled from measured data.
 > Where a measurement contradicted what this document originally claimed — the direction of the
 > closed-loop error in §2, the burstiness of real traffic in §3 — the original claim is kept
-> and the contradiction stated beside it, rather than reworded to look intended.
+> and the contradiction stated beside it, rather than reworded to look intended. Where the
+> contradiction itself later turned out to be an artefact (§2), that is stated too.
 
 ---
 
@@ -44,39 +45,35 @@ Load is generated **open-loop with Poisson arrivals**. Inter-arrival times are d
 `Exponential(1/λ)` and dispatched at their scheduled wall-clock instant *regardless of whether
 earlier requests have returned*.
 
-**Why not closed-loop — and why the usual reason turned out to be wrong here.** A
-fixed-concurrency generator only issues a new request when a prior one completes. The textbook
-objection is **coordinated omission**: when the server stalls, the generator stalls with it, the
-slow period is under-sampled, and the reported tail is optimistic. That was this document's
-claim, and the closed-loop exhibit (`vllm-bf16-closed-loop`) was built to measure the size of
-the error.
+**Why not closed-loop — and why the usual reason is only half the story.** A fixed-concurrency
+generator only issues a new request when a prior one completes. The textbook objection is
+**coordinated omission**: when the server stalls, the generator stalls with it, the slow period is
+under-sampled, and the reported tail is optimistic. That was this document's claim, and the
+closed-loop exhibit (`vllm-bf16-closed-loop`) was built to measure the size of the error.
 
-It measured the opposite sign. At throughput-matched points the closed loop never understates
-the open-loop p99: at 4 rps the two are indistinguishable, at 1 rps the closed loop is 1.6×
-worse, and at 5–7 rps it reports a tail **3.3–3.7× worse** (REPORT.md §6).
+**Its first measurement appeared to show the opposite sign, and that was an artefact.** Near the
+knee the closed loop reported a p99 3.3–3.7× *worse* than open loop at matched throughput. The
+closed loop starts all N workers at the same instant, so its first N requests arrive as one burst
+that a steady-state closed loop never produces; with the matrix's 50-request warm-up, the last
+N − 50 requests of that burst — up to 110 — were measured, and the percentile that jumped tracked
+exactly that share of the sample. From v0.2.3 a closed-loop run warms up for at least N requests
+and keeps per-request records. Re-measured that way, the burst requests alone reach 2.2–4.0 s —
+where the old p99 sat — and near the knee the closed loop *understates* the open-loop p99, as
+coordinated omission predicts (REPORT.md §6).
 
-**The size of the near-knee gap is partly an artefact of the harness.** The closed loop starts
-all N workers at the same instant, so its first N requests arrive as one burst that a
-steady-state closed loop never produces. The warm-up was the matrix's 50 requests; for N = 64 to
-160 the last N − 50 requests of that burst — up to 110 — were measured, and the percentile that
-jumps in the data tracks exactly that share of the sample (p99 at N = 64, where it is 1.9 %; p95
-too from N = 128, where it is 6.2 %). Per-request records were not kept, so this is an inference
-the committed data cannot confirm. From v0.2.3 a closed-loop run warms up for at least N
-requests and keeps its per-request records; the near-knee rows are to be re-measured with it.
+**At light load the sign does reverse.** At 1 rps (N = 8, no burst in the sample) the closed loop's
+p99 is 1.6× worse; at 4 rps the two are indistinguishable. The proposed mechanism: a
+continuous-batching engine below saturation has no stalls for coordinated omission to hide. What a
+closed loop does instead is hold occupancy at a constant maximum, so every new request's prefill
+competes with a full batch of decodes; Poisson arrivals at the same mean let occupancy fluctuate,
+and requests that land in a lull get fast prefill.
 
-The 1 rps row (N = 8) has no burst in its sample and is still worse, so some effect is real. The
-proposed mechanism: a continuous-batching engine below saturation
-has no stalls for coordinated omission to hide. What a closed loop does instead is hold
-occupancy at a constant maximum, so every new request's prefill competes with a full batch of
-decodes; Poisson arrivals at the same mean let occupancy fluctuate, and requests that land in
-a lull get fast prefill.
-
-The conclusion survives; the reason had to be replaced. Open-loop is correct not because a
-closed loop flatters the server but because a closed loop's offered load is a *consequence of
-the server's speed* — the generator and the thing under test are coupled, and a coupled
-generator cannot measure the server against any load a deployment would actually receive. On
-this stack that coupling produced a pessimistic tail rather than an optimistic one. Either way
-it is not the tail a real arrival process would see.
+The conclusion survives, for a reason that holds at every load. Open-loop is correct not because
+a closed loop always flatters the server but because a closed loop's offered load is a
+*consequence of the server's speed* — the generator and the thing under test are coupled, and a
+coupled generator cannot measure the server against any load a deployment would actually receive.
+Here that coupling made the tail pessimistic at light load and optimistic near capacity. Either
+way it is not the tail a real arrival process would see.
 
 The exhibit reuses `fire_one`, the open-loop generator's own request function, rather than
 reimplementing it. Two generators with two SSE parsers and two TTFT definitions would differ in
@@ -121,21 +118,20 @@ and length distribution changes batching behaviour completely.
   remain comparable to published work.
 - **Secondary:** an **Azure LLM Inference Trace** replay, supplying real production *arrival
   timestamps* rather than assumed Poisson. Designed as five independent non-overlapping windows
-  against five independent Poisson seeds, interleaved. **In the committed data all five trace
-  replays were the same window:** `select_windows` searched the remaining trace for the best
-  match but advanced its cursor from the start of that remainder rather than past the window it
-  had taken, so it found the same best-matching window on every pass. The five trace runs'
-  identical measurement windows (193.42–193.45 s, against 195–213 s for the five Poisson draws)
-  show it in the data. Fixed in v0.2.3, with a test that the windows are disjoint; the re-run is
-  pending. What the committed data does show: that one window's p99 TTFT is indistinguishable
-  from the Poisson draws'.
+  against five independent Poisson seeds, interleaved. **The first study replayed one window
+  five times:** `select_windows` searched the remaining trace for the best match but advanced
+  its cursor from the start of that remainder rather than past the window it had taken, so it
+  found the same best-matching window on every pass. The five trace runs' identical measurement
+  windows (193.42–193.45 s, against 195–213 s for the five Poisson draws) showed it in the data.
+  Fixed in v0.2.3, with a test that the windows are disjoint, and re-run (`arrival-v2-*`): five
+  distinct windows against five fresh Poisson draws, p99 TTFT indistinguishable (REPORT.md §6).
+  The first study's files are kept as history; the comparison uses the latest session.
 
-  **The window that was replayed is very close to Poisson at this timescale.** In a 180 s window
-  matched to 4 req/s, its inter-arrival times have a squared coefficient of variation of
-  **1.02** against a Poisson process's 1.00. The expectation going in was that real traffic
-  would be markedly burstier; measured, for this window at this rate, it is not. Other windows
-  are not all like it: the five best non-overlapping windows near 4 req/s have CV² between
-  0.99 and 1.61.
+  **The published Azure conversation trace is close to Poisson at this timescale, but not
+  uniformly.** The five best non-overlapping 180 s windows near 4 req/s have inter-arrival CV²
+  between 0.99 and 1.61, against a Poisson process's 1.00. The expectation going in was that real
+  traffic would be markedly burstier; measured at this rate, most of it is not, and the one
+  window that is (1.61) gave the highest p99 of the study.
 
   **Rate matching.** Windows of a real trace rarely sit exactly at the target rate — those five
   run at 4.00–4.44 req/s. From v0.2.3 each window is time-scaled to exactly the target mean rate
@@ -222,7 +218,7 @@ run against clocks sampled during the measurement window.
 **Until v0.2.3 that verification was written but never run.** The preflight warning promised it,
 and the function existed with tests, but nothing called it, so every committed record carries
 the lock as a claim only. Checked after the fact against the recorded clock distributions, 88
-of the 187 valid runs have a median SM clock below 1710 MHz — under load the card trades clock
+of the 187 valid runs made before v0.2.3 have a median SM clock below 1710 MHz — under load the card trades clock
 for watts at its 300 W cap, as the section above describes, so this is physics rather than a
 lapsed lock, but it is a real difference in clock between light and heavy load. From v0.2.3
 every run is re-checked against the clocks sampled while the GPU was loaded, and the result is
@@ -239,19 +235,19 @@ inlet air temperature on the measurement device. Mitigations: measurement is pin
 GPU; clocks are locked; throttle telemetry is captured per run; and every record carries a
 `neighbor_gpu_busy` flag so no result can quietly lose its asterisk.
 
-133 of the 244 runs were measured beside a busy neighbour, including **both SGLang
-configurations in their entirety** — which puts the confound directly on the engine axis, where
-it matters most. The stamp made it possible to check rather than argue about. Across the valid
-runs:
+155 of the 266 runs were measured beside a busy neighbour, including **both SGLang
+configurations in their entirety** and every re-measured methodology run — which puts the
+confound directly on the engine axis, where it matters most. The stamp made it possible to check
+rather than argue about. Across the valid runs:
 
 | | runs | temp mean | temp max | SM clock | power | throttled samples |
 |---|---|---|---|---|---|---|
-| busy neighbour | 115 | 68.6 °C | 72 °C | 1666 MHz | 290.5 W | 0 |
+| busy neighbour | 137 | 68.4 °C | 72 °C | 1664 MHz | 291.2 W | 0 |
 | quiet chassis | 72 | 69.9 °C | 72 °C | 1667 MHz | 290.2 W | 0 |
 
-Runs beside a busy neighbour were **1.3 °C cooler at the same clock** — the opposite direction
-to the feared effect, and small. (At 168 runs the same comparison read 1.1 °C cooler and 7 MHz
-faster; the direction has held as the data grew.) No record throttled; the only reason ever observed
+Runs beside a busy neighbour were **1.5 °C cooler at essentially the same clock** — the opposite
+direction to the feared effect, and small. (At 168 runs the same comparison read 1.1 °C cooler
+and 7 MHz faster; the direction has held as the data grew.) No record throttled; the only reason ever observed
 anywhere in the sweep is `sw_power_cap`, which is the card's own 300 W budget rather than
 thermal coupling. `vllm-bf16` crosses the quiet-to-busy boundary between 4 and 5 rps with no
 discontinuity in TTFT, TPOT or throughput.
@@ -482,8 +478,9 @@ changed.
 **Per-request records.** From v0.2.3 every run also writes its individual requests — dispatch
 time, TTFT, inter-token gaps, token counts, errors — to `results/raw/<run>.jsonl.gz`
 (gitignored: a full sweep is hundreds of MB). Earlier runs kept only their summaries, which is
-why some questions about them (above all the closed-loop start-up burst) cannot be settled
-from the committed data.
+why the closed-loop start-up burst could not be confirmed from their data. The records of the
+runs that re-measured it (and of the second arrival study) are attached to the v0.2.4 release as
+`per-request-records.tar`.
 
 **Valid is not the same as steady.** A run is `oversubscribed` only when its achieved request
 rate falls below 80 % of the offered one, measured over a window that includes the drain after

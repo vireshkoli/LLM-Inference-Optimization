@@ -348,9 +348,9 @@ def methodology_table(
     """Burstiness against Poisson at one rate; closed loop at every matched rate.
 
     The closed-loop exhibit is shown at each open-loop rate it was matched to,
-    because its result *changes sign* with load: indistinguishable below the
-    knee, several times worse at it. One row would have to pick a load, and
-    whichever it picked would misrepresent the other.
+    because its result *changes sign* with load: worse than open loop at light
+    load, indistinguishable in the middle, better near capacity. One row would
+    have to pick a load, and whichever it picked would misrepresent the others.
 
     Rows appear only for exhibits that have actually been run. A table that
     invented a row for an unexecuted run would be claiming a measurement.
@@ -375,8 +375,8 @@ def methodology_table(
             )
         ratio = cmp.understatement_ratio("p99")
         if ratio > 1:
-            return f"**{ratio:.1f}x understated** (p99 {gap:+.0f} ms)"
-        return f"**{1 / ratio:.1f}x worse** (p99 {gap:+.0f} ms)"
+            return f"**{_times(ratio)} understated** (p99 {gap:+.0f} ms)"
+        return f"**{_times(1 / ratio)} worse** (p99 {gap:+.0f} ms)"
 
     trace = process_comparison(
         runs,
@@ -428,6 +428,11 @@ def methodology_table(
     if rows == 0:
         return "_No methodology exhibits have been run yet._"
     return "\n".join(lines)
+
+
+def _times(ratio: float) -> str:
+    """A ratio as ``1.6x``, or ``1.04x`` when one decimal would round it to 1.0."""
+    return f"{ratio:.2f}x" if ratio < 1.5 else f"{ratio:.1f}x"
 
 
 def _signed(value: float, digits: int = 1) -> str:
@@ -499,9 +504,9 @@ def _closed_loop_summary(runs: Sequence[RunResult], *, baseline_config_id: str) 
         ratio = cmp.understatement_ratio("p99")
         if ratio > 1:
             better += 1
-            parts.append(f"{where} {ratio:.1f}x better")
+            parts.append(f"{where} {_times(ratio)} better")
         else:
-            parts.append(f"{where} {1 / ratio:.1f}x worse")
+            parts.append(f"{where} {_times(1 / ratio)} worse")
     if not parts:
         return None
     verdict = (
@@ -544,7 +549,7 @@ def _trace_summary(
     gap = cmp.ttft_p99_ms - cmp.baseline_ttft_p99_ms
     band = 2 * cmp.p99_pooled_stderr_ms
     verdict = (
-        "indistinguishable: at this rate the recorded traffic costs the tail no more than Poisson"
+        "indistinguishable: no measurable tail cost from real arrival timing at this rate"
         if not cmp.p99_significant
         else ("worse than Poisson" if gap > 0 else "better than Poisson")
     )

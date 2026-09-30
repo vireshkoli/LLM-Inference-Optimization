@@ -26,7 +26,7 @@ for a living can spot it in thirty seconds:
 | Common failure | What this repo does instead |
 |---|---|
 | "N tokens/sec" with no load level | Latency-vs-throughput **curve**, swept to saturation, knee identified |
-| Closed-loop load generator | **Open-loop, Poisson arrivals.** A closed loop's offered load is a consequence of the server's speed, so it cannot measure the server against real traffic. *Measured here, the textbook direction was wrong: at matched throughput the closed loop never reported a better tail — only an equal or a worse one (see below).* |
+| Closed-loop load generator | **Open-loop, Poisson arrivals.** A closed loop's offered load is a consequence of the server's speed, so it cannot measure the server against real traffic. *Measured here, its error changes sign with load: near capacity it understated the tail, as coordinated omission predicts; at light load it overstated it (see below).* |
 | Only end-to-end latency | **TTFT, TPOT, e2e, token- and request-throughput reported separately** — otherwise you cannot tell prefill-bound from decode-bound |
 | Fixed 128-in / 128-out | Real length distributions sampled from **ShareGPT**, clamped to context, with the sampled distribution recorded in every result |
 | One run, no error bars | **≥3 repeats**, mean ± std on every point |
@@ -123,7 +123,7 @@ and queue time appearing only at saturation, while prefill stays flat.
 ![Quality vs cost at a fixed latency budget](results/figures/pareto_quality_cost.png)
 
 <!-- BEGIN:headline -->
-**244 measured runs** across 6 configurations, 6 quality evaluations, open-loop, at least three repeats per point.
+**266 measured runs** across 6 configurations, 6 quality evaluations, open-loop, at least three repeats per point.
 
 Under a **p95 TTFT budget of 500 ms**, `vllm-int8-w8a8` is cost-optimal: **2116 output tokens/sec at $0.0525 per million tokens** — 27 % cheaper than `vllm-bf16`. `vllm-bf16` is dominated: 4 configurations are cheaper at equal-or-better measured quality.
 
@@ -169,7 +169,7 @@ Cost assumes **$0.40/GPU-hour** (RunPod, https://www.runpod.io/pricing, accessed
 <!-- BEGIN:validity -->
 | Validity | Runs | Meaning |
 |---|---|---|
-| `valid` | 187 | reportable |
+| `valid` | 209 | reportable |
 | `oversubscribed` | 57 | offered load beyond capacity; latency reflects run duration |
 <!-- END:validity -->
 
@@ -188,8 +188,8 @@ full generated tables; this is their summary.
 | Test | Result |
 |---|---|
 | **Cross-validation vs `vllm bench serve`** | Same live server, constant 256/256-token requests at 4 rps: 5 of 6 metrics within ±5 % (TTFT mean +3.5 %, TTFT p99 +4.9 %, TPOT mean -2.6 %, TPOT p99 -1.6 %, E2E mean -2.5 %, Output throughput -5.1 %). Sampling lengths independently, the gap reached +63 % (E2E mean) — the harnesses drew 303 and 192 output tokens per request. |
-| **Closed-loop exhibit** | p99 TTFT at matched throughput, closed against open loop: 1 rps (N=8) 1.6x worse; 4 rps (N=48) indistinguishable; 5 rps (N=64) 3.5x worse; 6 rps (N=96) 3.7x worse; 7 rps (N=128) 3.3x worse. Coordinated omission predicts a closed loop flatters the tail; here it never reported a better tail than the open loop. |
-| **Azure trace replay** | 5 replays of the trace against 5 Poisson draws: p99 TTFT +4 ms against ±24 ms — indistinguishable: at this rate the recorded traffic costs the tail no more than Poisson. |
+| **Closed-loop exhibit** | p99 TTFT at matched throughput, closed against open loop: 1 rps (N=8) 1.6x worse; 4 rps (N=48) indistinguishable; 5 rps (N=64) 1.07x better; 6 rps (N=96) 1.04x better; 7 rps (N=160) 1.19x better. Coordinated omission predicts a closed loop flatters the tail; here it reported a better tail at 3 of 5 matched rates. |
+| **Azure trace replay** | 5 distinct non-overlapping windows (time-scaled x1.00-x1.11 to 4 rps; CV² 0.99-1.61) against 5 Poisson draws: p99 TTFT +24 ms against ±36 ms — indistinguishable: no measurable tail cost from real arrival timing at this rate. |
 | **Drift canary** | `vllm-bf16` re-measured at the end of the sweep: p95 TTFT 253 → 204 ms (-48 ms; twice the original's std is 90 ms), throughput +0.0 % — within the sweep's own noise. |
 | **Same checkpoint, two engines** | GSM8K strict, vLLM vs SGLang: BF16 0.7293 vs 0.7286; AWQ 0.7316 vs 0.7316. |
 | **INT8 ceiling** | Valid up to 9 rps (2303 tok/s; p95 TTFT 2353 ms, against 459 ms at 8 rps), oversubscribed from 10 rps. The other vLLM configurations are valid up to 7-8 rps. |

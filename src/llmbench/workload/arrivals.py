@@ -10,8 +10,8 @@ requests have completed. A closed-loop generator instead waits for a completion
 before issuing the next request, so its offered load is a consequence of the
 server's speed rather than an input to the measurement. The textbook consequence
 is *coordinated omission* -- the slow periods are under-sampled and the tail
-looks optimistic -- though on this stack the measured error ran the other way
-(METHODOLOGY.md §2).
+looks optimistic. Measured on this stack, that holds near capacity; at light
+load the error runs the other way (METHODOLOGY.md §2).
 
 The closed loop has no schedule to generate: it lives in
 :mod:`llmbench.loadgen.closed_loop`, exists only to demonstrate that difference
