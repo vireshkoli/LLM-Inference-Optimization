@@ -1,6 +1,6 @@
 [project]
 name = "llmbench"
-version = "0.2.3"
+version = "0.2.4"
 description = "Rigorous latency, throughput, quality and cost benchmarking of quantized LLM serving on NVIDIA A40"
 readme = "README.md"
 requires-python = ">=3.12"
