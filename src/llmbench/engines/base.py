@@ -194,6 +194,12 @@ class EngineProcess(ABC):
             ),
             "-v",
             f"{spec.hf_cache_dir}:/root/.cache/huggingface:ro",
+            # The checkpoint is verified in the local cache before launch, so
+            # the engine never needs the Hub. Without this it still asks: on a
+            # host with failing DNS, vLLM spent five minutes in retried lookups
+            # and missed its start-up deadline by seconds.
+            "-e",
+            "HF_HUB_OFFLINE=1",
             # vLLM and SGLang both need more than Docker's default 64 MB of
             # shared memory for their worker IPC.
             "--shm-size",

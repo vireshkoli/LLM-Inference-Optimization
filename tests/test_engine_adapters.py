@@ -128,6 +128,12 @@ class TestDockerArguments:
         args = VllmEngine().docker_args(spec())
         assert any(a.endswith(":/root/.cache/huggingface:ro") for a in args)
 
+    def test_engine_never_needs_the_hub(self) -> None:
+        """Weights are pre-cached and mounted read-only; a Hub lookup can only
+        cost start-up time, and with failing DNS it cost the whole deadline."""
+        args = VllmEngine().docker_args(spec())
+        assert args[args.index("-e") + 1] == "HF_HUB_OFFLINE=1"
+
     def test_raises_shm_above_the_docker_default(self) -> None:
         """Docker's default 64 MB /dev/shm is too small for vLLM worker IPC."""
         args = VllmEngine().docker_args(spec())
